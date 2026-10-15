@@ -13,6 +13,15 @@ lines its run must print, and the gates run on the mini cluster.
     bend2/main.ts       the CLI; imported, the .bend loader for bun and node
     bend2/safe.ts       --verdict and -o <out>.bendtt: the elaborator from a
                         checked book to BendTT text
+    bend2/defun.ts      this fork (C006 phase 1): --verdict and -o x.bendtt
+                        on a book with *->: its defunctionalization to Bend
+                        text, which bend2 checks again and safe.ts elaborates
+    bend2/defun_check.ts  the fail-closed validator of that translation
+                        (its rule set heads the file) and policy T1
+    tools/defun/        translate.ts (print a translation), verdict-tests.sh
+                        (tests/closure/verdict), diff-tests.sh (source vs
+                        translation on upstream Bend), mutate.ts (the
+                        validator's mutation tests)
     bend2/bendtt.lean   BendTT: the kernel, its claims (no checked def has type
                         Empty, live code halts) and their proofs; --verdict
                         builds its CLI once, with Lean v4.34.0

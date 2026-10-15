@@ -55,6 +55,8 @@ import * as path from "node:path";
 
 import * as B from "./bend.ts";
 import type { Book, Def, HTerm, Name, Quant, ADT } from "./bend.ts";
+import * as Defun from "./defun.ts";
+import * as DefunCheck from "./defun_check.ts";
 
 // Types
 // =====
@@ -1672,4 +1674,61 @@ export function safe_check(book: Book): string | null {
   const got = safe_book(book);
   return got.oos.length === 0 ? kernel_check(got.text) : "BendTT: out of scope:\n"
     + got.oos.map(([k, why]) => "- " + B.name_key(k) + ": " + why).join("\n");
+}
+
+// Callable-many closures (this fork, C006 phase 1)
+// ======================
+// A book with *-> goes to the kernel through its defunctionalization
+// (defun.ts): the translation is checked again by bend2, elaborated here,
+// checked against the source by the validator (defun_check.ts; a
+// violation refuses), and then checked by the kernel. The verdict names
+// the translation, never ALL PROOFS CHECK (SPEC 7.3 T7).
+
+export const DEFUN_PASS = "EMITTED TRANSLATION ACCEPTED BY KERNEL (callable-many closures defunctionalized)";
+
+export const DEFUN_NOTE = "The kernel accepted the emitted translation. The defunctionalization is unverified;"
+  + " a validator checked its structure. This does not establish that the source program's behavior or laws are"
+  + " preserved, and ownership rules are checked only by the source checker.";
+
+// the stages, for the validator's mutation tests (tools/defun/mutate.ts):
+// the elaboration of a book without *-> and the kernel's verdict on a text
+export function safe_elaborate(book: Book): { text: string; oos: Array<[Name, string]> } {
+  return safe_book(book);
+}
+
+export function safe_kernel(text: string): string | null {
+  return kernel_check(text);
+}
+
+// the BendTT text of a book with *-> and its translation (Bend text), or
+// a Defun.Refusal thrown
+export async function safe_defun(book: Book): Promise<{ text: string; bend: string }> {
+  const bend = Defun.defun_translate(book);
+  const tbook = await Defun.defun_recheck(bend);
+  const got = safe_book(tbook);
+  if (got.oos.length !== 0) {
+    throw new Defun.Refusal("the emitted translation is out of the kernel's scope:\n"
+      + got.oos.map(([k, why]) => "- " + B.name_key(k) + ": " + why).join("\n"));
+  }
+  const bad = DefunCheck.validate(book, tbook, got.text);
+  if (bad.length !== 0) {
+    throw new Defun.Refusal("the validator rejected the emitted translation (fail closed):\n- " + bad.join("\n- "));
+  }
+  return { text: got.text, bend };
+}
+
+// --verdict on a book with *->: refused (why), rejected by the kernel
+// (why), or accepted
+export async function safe_check_many(book: Book): Promise<{ $: "ok" } | { $: "refused"; why: string } | { $: "kernel"; why: string }> {
+  let text: string;
+  try {
+    text = (await safe_defun(book)).text;
+  } catch (e) {
+    if (e instanceof Defun.Refusal) {
+      return { $: "refused", why: e.why };
+    }
+    throw e;
+  }
+  const why = kernel_check(text);
+  return why === null ? { $: "ok" } : { $: "kernel", why };
 }

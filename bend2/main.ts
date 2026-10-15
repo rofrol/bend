@@ -23,6 +23,7 @@ import type { BunPlugin } from "bun";
 import * as Bend from "./bend.ts";
 import * as Comp from "./comp.ts";
 import * as Safe from "./safe.ts";
+import * as Defun from "./defun.ts";
 
 // Main
 // ====
@@ -305,7 +306,7 @@ async function cli_file(args: string[]): Promise<void> {
     const seen = new Map<string, string | null>();
     const book = await book_read(file, undefined, seen);
     if (only || verdict) {
-      process.exitCode = cli_verdict(book, verdict);
+      process.exitCode = await cli_verdict(book, verdict);
       return;
     }
     if (outs.length === 0) {
@@ -319,7 +320,7 @@ async function cli_file(args: string[]): Promise<void> {
       if (ins.has(at) || (fs.existsSync(at) && fs.statSync(at).isDirectory())) {
         cli_fail("-o " + out + " is a file the program reads, or a directory");
       }
-      cli_emit(book, out);
+      await cli_emit(book, out);
     }
   } catch (e) {
     cli_say(2, book_err(e) + "\n");
@@ -370,13 +371,22 @@ function path_real(p: string): string {
   return fs.existsSync(p) ? fs.realpathSync(p) : path.resolve(p);
 }
 
-function cli_emit(book: Bend.Book, out: string): void {
+async function cli_emit(book: Bend.Book, out: string): Promise<void> {
   if (out.endsWith(".mjs")) {
     fs.writeFileSync(out, Comp.js_lib(book, true));
   } else if (/\.c?js$/.test(out)) {
     fs.writeFileSync(out, Comp.js_book(book));
   } else if (out.endsWith(".c")) {
     fs.writeFileSync(out, Comp.compile_book(book));
+  } else if (out.endsWith(".bendtt") && Bend.book_many_at(book) !== null) {
+    try {
+      fs.writeFileSync(out, (await Safe.safe_defun(book)).text);
+    } catch (e) {
+      if (e instanceof Defun.Refusal) {
+        throw "Error: -o " + out + " cannot translate this book's callable-many closures (C006 phase 1): " + e.why;
+      }
+      throw e;
+    }
   } else if (out.endsWith(".bendtt")) {
     const oos = Safe.safe_emit(book, out);
     if (oos.length !== 0) {
@@ -810,7 +820,28 @@ async function pow_mine(hash: string, bytes: number): Promise<number> {
 // a mismatch: bend2 accepted what the kernel rejects; it shows the why.
 // When none of those is a law or a def of the file, no law or proof uses
 // them: they come in through imports, and a hint names them.
-function cli_verdict(book: Bend.Book, kernel: boolean): number {
+async function cli_verdict(book: Bend.Book, kernel: boolean): Promise<number> {
+  if (!kernel || Bend.book_many_at(book) === null || book_promises(book).length !== 0) {
+    return cli_verdict_plain(book, kernel);
+  }
+  // a book with callable-many closures (this fork, C006 phase 1): the
+  // kernel checks its defunctionalization
+  const got = await Safe.safe_check_many(book);
+  if (got.$ === "refused") {
+    cli_say(2, FAIL + "\nError: --verdict cannot check this book's callable-many closures (C006 phase 1): "
+      + got.why + "\n");
+    return 1;
+  }
+  if (got.$ === "kernel") {
+    cli_say(2, FAIL + "\nThe kernel rejected the emitted translation (callable-many closures defunctionalized):\n"
+      + got.why + "\n");
+    return 1;
+  }
+  cli_say(1, Safe.DEFUN_PASS + "\n" + Safe.DEFUN_NOTE + "\n");
+  return 0;
+}
+
+function cli_verdict_plain(book: Bend.Book, kernel: boolean): number {
   const bad = book_promises(book);
   const n   = new Set(bad.flatMap(([, ks]) => ks)).size;
   if (n !== 0) {
@@ -971,7 +1002,7 @@ function book_main(book: Bend.Book): Bend.Def | null {
 function book_run(book: Bend.Book, argv: string[]): number {
   const main = book_main(book);
   if (main === null) {
-    return cli_verdict(book, false);
+    return cli_verdict_plain(book, false);
   }
   if (Comp.io_type(book) !== null) {
     return Comp.io_run(book, argv);
