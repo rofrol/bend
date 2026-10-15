@@ -1847,7 +1847,8 @@ function arr_leaf(sc: Scope, s: string, el: Lay): Val {
 // ====
 
 // A binding counts its uses: the last takes the value, an earlier
-// one shares it. A fresh binding of a shared box of a flat type
+// one shares it. A lend to a borrowed (&) parameter is such a use: the
+// callee holds a reference and drops it by its own last use. A fresh binding of a shared box of a flat type
 // unboxes before its first share, so its words copy, not its node.
 
 function bind_pop(sc: Scope, x: HTerm): Val {

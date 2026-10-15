@@ -16,6 +16,7 @@
 // Bind ::=
 //   | Quant Name ":" Term
 //   | "~" Name ":" Term
+//   | "&" Name ":" Term           (a def parameter only: borrowed)
 //   | Name
 //
 // Term ::=
@@ -251,6 +252,16 @@
 // spells one (book_many_refuse), and so does the C lane with a ! call.
 // a backend shares the closure when its binder is called more than once:
 // a call copies the environment, a move hands the closure over.
+// a def parameter &f: A *-> B is borrowed: inside the def f is only
+// called, or lent to another & parameter, never moved, stored, returned,
+// let-bound or captured by any closure (infer-var refuses every other
+// use), and a def that borrows is only called with all its arguments,
+// so no partial application keeps f. a lend is charged as a Call, so an
+// owned call-only binder may be called and lent in one scope (a move
+// still clashes), and recursion lends f down unchanged: map(&f, xs). f
+// never reaches a value that outlives the call, which is what omega
+// needs. the lent closure is shared like a called one (a reference for
+// the callee, dropped by it).
 // an @unsafe def opts out of the wall: its self-calls skip descent, its
 // binder domains form + at any kind, and it calls an unfilled law or a
 // def below it, so the claims above do not cover a book that uses one.
@@ -311,7 +322,7 @@ export type TermOf<B> = (
   | { $: "Qnt" }                                                                   // Quant
   | { $: "Qua"; q: Quant }                                                         // &1, &2
   | { $: "Min"; a: TermOf<B>; b: TermOf<B> }                                       // a <&> b
-  | { $: "All"; q: Quant; k: Name; i: number; A: TermOf<B>; B: BodyOf<B>; c?: Bool } // @x:A -> B, A *-> B (c)
+  | { $: "All"; q: Quant; k: Name; i: number; A: TermOf<B>; B: BodyOf<B>; c?: Bool; l?: Bool } // @x:A -> B, A *-> B (c), &x (l)
   | { $: "Lam"; k: Name; i: number; f: BodyOf<B>; q?: Quant; c?: Bool }            // x => f, *x => f (c)
   | { $: "App"; f: TermOf<B>; x: TermOf<B> }                                       // f(x)
   | { $: "ADT"; k: Name; x: TermOf<B>[]; r: Name[] }                               // A<x0,x1,...>
@@ -343,7 +354,7 @@ export type TLD  = ADT | Def;
 export type Book = { tlds: Record<Name, TLD>; ctrs: Record<Name, Ctr>; order: Name[]; hols: number; tmps: Record<Name, Map<string, Name>>; many?: Span; };
 
 // Context
-export type Ann = { q: Quant; k: Name; T: HTerm };
+export type Ann = { q: Quant; k: Name; T: HTerm; l?: Bool };
 export type Ctx = PMap<Ann>;
 
 // Body
@@ -416,8 +427,9 @@ export function Min<X>(a: TermOf<X>, b: TermOf<X>, s?: Span): TermOf<X> {
   return { $: "Min", a, b, s };
 }
 
-export function All<X>(q: Quant, k: Name, i: number, A: NoInfer<TermOf<[X]>>, B: X, s?: Span, c?: Bool): TermOf<[X]> {
-  return c === true ? { $: "All", q, k, i, A, B, s, c } : { $: "All", q, k, i, A, B, s };
+export function All<X>(q: Quant, k: Name, i: number, A: NoInfer<TermOf<[X]>>, B: X, s?: Span, c?: Bool, l?: Bool): TermOf<[X]> {
+  const t: TermOf<[X]> = c === true ? { $: "All", q, k, i, A, B, s, c } : { $: "All", q, k, i, A, B, s };
+  return l === true ? { ...t, l } as TermOf<[X]> : t;
 }
 
 export function Lam<X>(k: Name, i: number, f: X, s?: Span, q?: Quant, c?: Bool): TermOf<[X]> {
@@ -795,7 +807,7 @@ export function term_higher(tm: LTerm, env: Env = null): HTerm {
       const A = term_higher(b.A, env);
       return All(b.q, b.k, b.i, A, (x: HTerm) => {
         return term_higher(b.B, list_set(env, b.i, x));
-      }, b.s, b.c);
+      }, b.s, b.c, b.l);
     }
     case "Lam": {
       const b = tm;
@@ -857,7 +869,7 @@ export function term_lower(term: HTerm, d: number = 0): LTerm {
     }
     case "All": {
       const x: HTerm = Var(tm.k, d);
-      return All(tm.q, tm.k, d, term_lower(tm.A, d), term_lower(tm.B(x), d + 1), tm.s, tm.c);
+      return All(tm.q, tm.k, d, term_lower(tm.A, d), term_lower(tm.B(x), d + 1), tm.s, tm.c, tm.l);
     }
     case "Lam": {
       const x: HTerm = Var(tm.k, d);
@@ -897,8 +909,8 @@ export function ctx_nil(): Ctx {
   return Emp<Ann>();
 }
 
-export function ctx_bind(ctx: Ctx, i: number, q: Quant, k: Name, T: HTerm): Ctx {
-  return pmap_set(ctx, i, { q, k, T });
+export function ctx_bind(ctx: Ctx, i: number, q: Quant, k: Name, T: HTerm, l?: Bool): Ctx {
+  return pmap_set(ctx, i, l === true ? { q, k, T, l } : { q, k, T });
 }
 
 export function ctx_dead(book: Book, ctx: Ctx): boolean {
@@ -1085,8 +1097,8 @@ export async function book_load(book: Book, file: string, ns: string, seen: Map<
 // Tele
 // ====
 
-export function tele_bind(tele: Array<[Quant, Name, number, LTerm, Span]>, end: LTerm): LTerm {
-  return tele.reduceRight((out, [q, k, i, T, s]) => All(q, k, i, T, out, s), end);
+export function tele_bind(tele: Array<[Quant, Name, number, LTerm, Span, Bool?]>, end: LTerm): LTerm {
+  return tele.reduceRight((out, [q, k, i, T, s, l]) => All(q, k, i, T, out, s, undefined, l), end);
 }
 
 export function tele_open(book: Book, tel: HTerm): Extract<HTerm, { $: "All" }> | null {
@@ -1423,7 +1435,7 @@ export function term_show(term: LTerm, top: number = -1, bnd: Name[] = [], file?
         bnd.push(tm.k);
         const B = go(tm.B, 1);
         bnd.pop();
-        const s = "@" + quant_show(tm.q) + tm.k + ":" + A + (tm.c === true ? " *-> " : " -> ") + B;
+        const s = "@" + (tm.l === true ? "&" : quant_show(tm.q)) + tm.k + ":" + A + (tm.c === true ? " *-> " : " -> ") + B;
         return prc > 1 ? "(" + s + ")" : s;
       }
       case "Lam": {
@@ -2463,8 +2475,8 @@ export function parse_terms(p: Parse): LTerm[] {
 // Tele
 // ----
 
-export function parse_tele(p: Parse, close: string, tk: Name[] = []): Array<[Quant, Name, number, LTerm, Span]> {
-  const tele: Array<[Quant, Name, number, LTerm, Span]> = [];
+export function parse_tele(p: Parse, close: string, tk: Name[] = []): Array<[Quant, Name, number, LTerm, Span, Bool?]> {
+  const tele: Array<[Quant, Name, number, LTerm, Span, Bool?]> = [];
   while (true) {
     parse_skip(p);
     if (parse_take(p, close)) {
@@ -2474,7 +2486,8 @@ export function parse_tele(p: Parse, close: string, tk: Name[] = []): Array<[Qua
       parse_fail(p, "a plain binder (only leading binders take ~)");
     }
     const ct  = close === ")" && parse_take(p, "~");
-    const q   = ct ? None() : parse_quant(p);
+    const bw  = close === ")" && !ct && parse_take(p, "&");
+    const q   = ct ? None() : bw ? Lone() : parse_quant(p);
     const beg = p.pos;
     const k   = parse_name(p);
     if (close === "}" && tele.some((cell) => cell[1] === k)) {
@@ -2482,7 +2495,7 @@ export function parse_tele(p: Parse, close: string, tk: Name[] = []): Array<[Qua
     }
     const s   = parse_span(p, beg);
     parse_skip(p);
-    const bare = q.$ === "Lone" && !parse_at(p, ":");
+    const bare = !bw && q.$ === "Lone" && !parse_at(p, ":");
     if (!bare) {
       parse_eat(p, ":");
     }
@@ -2490,7 +2503,7 @@ export function parse_tele(p: Parse, close: string, tk: Name[] = []): Array<[Qua
     if (ct) {
       tk.push(k);
     }
-    tele.push([bare ? None() : q, k, parse_open(p, k), T, s]);
+    tele.push([bare ? None() : q, k, parse_open(p, k), T, s, bw || undefined]);
     parse_skip(p);
     parse_take(p, ",");
   }
@@ -2989,7 +3002,7 @@ export function term_wnf(book: Book, term: HTerm): HTerm {
             switch (tm.$) {
               case "Ctr": tm = Ctr(tm.k, tm.x.map((x) => term_cell(x)), tm.s); break;
               case "ADT": tm = ADT(tm.k, tm.x.map((x) => term_cell(x)), tm.s, tm.r); break;
-              case "All": tm = All(tm.q, tm.k, tm.i, term_cell(tm.A), tm.B, tm.s, tm.c); break;
+              case "All": tm = All(tm.q, tm.k, tm.i, term_cell(tm.A), tm.B, tm.s, tm.c, tm.l); break;
               case "Mat": tm = Mat(tm.k, term_cell(tm.h), term_cell(tm.m), tm.s); break;
               case "Eql": tm = Eql(term_cell(tm.a), term_cell(tm.b), term_cell(tm.T), tm.s); break;
               case "Min": tm = Min(term_cell(tm.a), term_cell(tm.b), tm.s); break;
@@ -3092,7 +3105,7 @@ export function term_snf(book: Book, term: HTerm): HTerm {
     case "All": {
       return All(tm.q, tm.k, tm.i, term_snf(book, tm.A), (x: HTerm) => {
         return term_snf(book, tm.B(x));
-      }, tm.s, tm.c);
+      }, tm.s, tm.c, tm.l);
     }
     case "Lam": {
       return Lam(tm.k, tm.i, (x: HTerm) => {
@@ -3229,7 +3242,7 @@ function compare_go(mode: "EQ" | "LE", book: Book, lhs: HTerm, rhs: HTerm, dep: 
     }
     case "All": {
       const x: HTerm = Var(a.k, dep);
-      return b.$ === "All" && a.q.$ === b.q.$ && (a.c === true) === (b.c === true)
+      return b.$ === "All" && a.q.$ === b.q.$ && (a.c === true) === (b.c === true) && (a.l === true) === (b.l === true)
           && compare_go(mode, book, b.A, a.A, dep)
           && compare_go(mode, book, a.B(x), b.B(x), dep + 1);
     }
@@ -3367,9 +3380,12 @@ export function term_infer(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ctx: Ctx,
       const ann = pmap_get(ctx, tm.i);
       if (ann === null) {
         throw Err(book, ctx, "a bound variable", tm, tm.s, lhs.def);
-      } else {
-        return Infer(Var(tm.k, tm.i, tm.s), ann.T, pmap_set(uses_nil(), tm.i, qt));
       }
+      if (ann.l === true && qt.$ !== "None") {
+        throw Err(book, ctx, "a call of " + ann.k + ", or a lend of it to a & parameter (" + ann.k
+          + " is borrowed: it is never moved, stored, returned or let-bound)", tm, tm.s, lhs.def);
+      }
+      return Infer(Var(tm.k, tm.i, tm.s), ann.T, pmap_set(uses_nil(), tm.i, qt));
     }
     // Book(k) : T
     // where a live k that is the lhs head descends: its pending
@@ -3420,7 +3436,12 @@ export function term_infer(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ctx: Ctx,
       if (tld.$ === "ADT" && tld.n > 0) {
         throw Err(book, ctx, "a family instance (write " + name_key(tm.k) + "<..>)", tm, tm.s, lhs.def);
       }
-      return Infer(Ref(k, tm.s, tm.b), book.tlds[k].T, uses_nil(), x);
+      const kd = book.tlds[k];
+      if (qt.$ !== "None" && kd.$ === "Def" && sp.length < kd.n && def_borrows(book, kd)) {
+        throw Err(book, ctx, "a call of " + name_key(k) + " with all " + String(kd.n) + " arguments (it borrows a"
+          + " parameter, and a partial application would keep it)", tm, tm.s, lhs.def);
+      }
+      return Infer(Ref(k, tm.s, tm.b), kd.T, uses_nil(), x);
     }
     // Γ ⊢ q : Quant
     // where q is dead
@@ -3456,13 +3477,19 @@ export function term_infer(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ctx: Ctx,
     case "All": {
       const B_ctx = ctx_bind(ctx, d, tm.q, tm.k, tm.A);
       const A_chk = term_check_kind(book, lhs, tm.A, tm.q, tm.k, ctx, d, tm.A.s ?? tm.s);
+      if (tm.l === true) {
+        const a = term_wnf(book, tm.A);
+        if (a.$ !== "All" || a.c !== true) {
+          throw Err(book, ctx, "a callable-many type A *-> B for the borrowed &" + tm.k, tm.A, tm.A.s ?? tm.s, lhs.def);
+        }
+      }
       const bad   = tm.c === true ? term_first_order(book, tm.A, d) : null;
       if (bad !== null) {
         throw Err(book, ctx, "a closed first-order domain for *-> (a primitive, a handle, an Array or a datatype"
           + " of those: no function, universe, type variable or stuck type family)", bad, tm.A.s ?? tm.s, lhs.def);
       }
       const B_chk = term_check(book, lhs, tm.B(Var(tm.k, d)), None(), Typ(Qua(Lone()), tm.s), B_ctx, d+1);
-      return Infer(All(tm.q, tm.k, d, A_chk.tm, B_chk.tm, tm.s, tm.c), Typ(Qua(Lone()), tm.s), uses_nil());
+      return Infer(All(tm.q, tm.k, d, A_chk.tm, B_chk.tm, tm.s, tm.c, tm.l), Typ(Qua(Lone()), tm.s), uses_nil());
     }
     // Γ ⊢ f : @q x:A -> B ~ fu
     // Γ ⊢ a : A ~ au
@@ -3476,11 +3503,16 @@ export function term_infer(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ctx: Ctx,
     //       a template head took a as a ~ argument (infer-ref, x of
     //       them): the application passes, its instance stands for both
     //       a live variable f at a callable-many type A *-> B is not
-    //       consumed by the call: it measures Call, not a move
+    //       consumed by the call: it measures Call, not a move; a
+    //       borrowed (&) f is called here only, and an argument to a &
+    //       parameter is lent (term_lend)
     // --------------------------------------------------------------- infer-app
     // Γ ⊢ f(a) : B(a) ~ fu + au
     case "App": {
-      const f_inf = term_infer(book, lhs, tm.f, qt, ctx, d, [tm.x, ...sp]);
+      const f_ann = tm.f.$ === "Var" && tm.f.i >= 0 ? pmap_get(ctx, tm.f.i) : null;
+      const f_inf = f_ann?.l === true && tm.f.$ === "Var"
+        ? Infer(Var(tm.f.k, tm.f.i, tm.f.s), f_ann.T, pmap_set(uses_nil(), tm.f.i, qt))
+        : term_infer(book, lhs, tm.f, qt, ctx, d, [tm.x, ...sp]);
       if (f_inf.x) {
         return { ...f_inf, x: f_inf.x - 1 };
       }
@@ -3495,7 +3527,8 @@ export function term_infer(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ctx: Ctx,
       if (f_wnf.c === true && qt.$ !== "None" && tm.f.$ === "Var" && tm.f.i >= 0) {
         f_us = uses_add(pmap_set(f_us, tm.f.i, None()), pmap_set(uses_nil(), tm.f.i, { $: "Call" }));
       }
-      const x_chk = term_check(book, lhs, tm.x, quant_dem(f_wnf.q, qt), f_wnf.A, ctx, d);
+      const x_chk = f_wnf.l === true ? term_lend(book, lhs, tm.x, qt, f_wnf.A, ctx, d)
+        : term_check(book, lhs, tm.x, quant_dem(f_wnf.q, qt), f_wnf.A, ctx, d);
       return Infer(App(f_inf.tm, x_chk.tm, tm.s), f_wnf.B(tm.x), uses_add(f_us, x_chk.us));
     }
     // book[k].T = @q1 p1:K1 -> .. -> Kind(G)
@@ -3757,9 +3790,12 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
         q = tm.q;
         term_check_kind(book, lhs, t_wnf.A, q, tm.k, ctx, d, tm.s);
       }
-      const f_ctx = ctx_bind(ctx, d, q, tm.k, t_wnf.A);
+      const f_ctx = ctx_bind(ctx, d, q, tm.k, t_wnf.A, t_wnf.l);
       const f_chk = term_check(book, f_lhs, tm.f(x), qt, t_wnf.B(x), f_ctx, d+1);
       const f_us  = uses_close(book, ctx, f_chk.us, d, tm.k, q, tm.s, lhs.def);
+      if (tm.c === true || lhs.n === 0) {
+        uses_unborrowed(book, ctx, f_us, tm.s, lhs.def);
+      }
       const us    = tm.c === true ? uses_capture(book, lhs, ctx, f_us, qt, d, tm.s) : lhs.n === 0 ? uses_move(f_us) : f_us;
       return Check(Lam(tm.k, d, f_chk.tm, tm.s, undefined, tm.c), ty, us);
     }
@@ -3902,6 +3938,10 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
           const h_chk = term_check(book, h_lhs, tm.h, qt, term_check_mat_goal(tel, ctr.n, []), ctx, d);
           const m_gol = All(t_wnf.q, t_wnf.k, t_wnf.i, ADT(a_wnf.k, a_wnf.x, tm.s, a_wnf.r.concat([ctr.k])), t_wnf.B, tm.s);
           const m_chk = rem.length === 1 && tm.m.$ !== "Mat" ? Check(Efq(tm.s), m_gol, uses_nil()) : term_check(book, lhs, tm.m, qt, m_gol, ctx, d);
+          if (lhs.n === 0) {
+            uses_unborrowed(book, ctx, h_chk.us, tm.s, lhs.def);
+            uses_unborrowed(book, ctx, m_chk.us, tm.s, lhs.def);
+          }
           const [hu, mu] = lhs.n === 0 ? [uses_move(h_chk.us), uses_move(m_chk.us)] : [h_chk.us, m_chk.us];
           const us = pmap_union(hu, mu, use_join);
           return Check(Mat(tm.k, h_chk.tm, m_chk.tm, tm.s), ty, us);
@@ -4008,6 +4048,51 @@ export function term_lift(book: Book, lhs: LHS, tm: HTerm, A: HTerm, ty: HTerm, 
     tel = t_all.B(x);
   }
   return term_compare("LE", book, All(a.q, a.k, a.i, a.A, a.B, a.s, true), g, d);
+}
+
+// a borrowed (&) binder never enters a closure: a closure outlives the
+// call that lent it
+export function uses_unborrowed(book: Book, ctx: Ctx, us: Uses, s?: Span, def?: Name): void {
+  for (const [i, u] of pmap_to_array(us)) {
+    const ann = pmap_get(ctx, i);
+    if (u.$ !== "None" && ann?.l === true) {
+      throw Err(book, ctx, "no capture of the borrowed " + ann.k + " (a closure outlives the call that lent it)", ann.T, s, def);
+    }
+  }
+}
+
+// an argument to a & parameter is lent: a variable of a callable-many
+// type (owned or itself borrowed) measures Call and stays the caller's;
+// anything else (a *x => lambda, a lifted def) checks as an argument
+export function term_lend(book: Book, lhs: LHS, x: HTerm, qt: Quant, A: HTerm, ctx: Ctx, d: number): Check {
+  const ann = x.$ === "Var" && x.i >= 0 ? pmap_get(ctx, x.i) : null;
+  if (ann === null || x.$ !== "Var") {
+    return term_check(book, lhs, x, qt, A, ctx, d);
+  }
+  if (!term_compare("LE", book, ann.T, A, d)) {
+    throw Err(book, ctx, A, ann.T, x.s, lhs.def);
+  }
+  return Check(Var(x.k, x.i, x.s), A, qt.$ === "None" ? uses_nil() : pmap_set(uses_nil(), x.i, { $: "Call" }));
+}
+
+// whether a def borrows a parameter (a & binder in its telescope)
+const DEF_BORROWS = new WeakMap<Def, boolean>();
+export function def_borrows(book: Book, def: Def): boolean {
+  let got = DEF_BORROWS.get(def);
+  if (got === undefined) {
+    got = false;
+    let tel = def.T;
+    for (let j = 0; j < def.n && !got; j++) {
+      const t = tele_open(book, tel);
+      if (t === null) {
+        break;
+      }
+      got = t.l === true;
+      tel = t.B(Var(t.k, j));
+    }
+    DEF_BORROWS.set(def, got);
+  }
+  return got;
 }
 
 // a callable-many closure captures only Data: each call copies its
