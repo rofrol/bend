@@ -3805,6 +3805,21 @@ OUTLINE void heap_hand(Env e, u32 cls) {
 static bool corpus_grow(u64* H, u64 need);
 #endif
 
+// BEND_ASAN_HEAP (a debug build with -fsanitize=address) poisons a cell
+// while it is free: a free poisons it after linking it, an allocation
+// unpoisons it before reading its link, and a fresh quantum's cells are
+// linked, then poisoned. A cell is 2^cls words, so 8-byte granules align.
+#if defined(BEND_ASAN_HEAP) && !DEVICE
+#include <sanitizer/asan_interface.h>
+#define HEAP_POISON(H, loc, words) \
+  ASAN_POISON_MEMORY_REGION((H) + (loc), sizeof(u64) * (words))
+#define HEAP_UNPOISON(H, loc, words) \
+  ASAN_UNPOISON_MEMORY_REGION((H) + (loc), sizeof(u64) * (words))
+#else
+#define HEAP_POISON(H, loc, words)   ((void)0)
+#define HEAP_UNPOISON(H, loc, words) ((void)0)
+#endif
+
 OUTLINE u64 heap_alloc_miss(Env e, u32 cls) {
   DEV u64* H = e.mem;
   u64  got = 0;
@@ -3822,13 +3837,16 @@ OUTLINE u64 heap_alloc_miss(Env e, u32 cls) {
     if ((u64)p + pages > a32_load_acq(a32_at(H, H_CAP))
       && !corpus_grow(H, (u64)p + pages)) {
       err_post(H, ERR_HEAP);
+      HEAP_UNPOISON(H, HEAP_OFF, 1ull << cls);
       return HEAP_OFF;
     }
     got = HEAP_OFF + ((u64)p << PAGE_BITS);
     for (u32 i = 1; i <= n; i += 1) {
       H[got + ((u64)(i - 1) << cls)] = i < n ? got + ((u64)i << cls) : 0;
     }
+    HEAP_POISON(H, got, (u64)n << cls);
   }
+  HEAP_UNPOISON(H, got, 1ull << cls);
   ALC_AT(e, cls)  = H[got];
   ALC_LEN(e, cls) = (u64)(n - 1) << cls;
   return got;
@@ -3837,6 +3855,7 @@ OUTLINE u64 heap_alloc_miss(Env e, u32 cls) {
 INLINE u64 heap_alloc(Env e, u32 cls) {
   u64 h = ALC_AT(e, cls);
   if (h) {
+    HEAP_UNPOISON(e.mem, h, 1ull << cls);
     ALC_AT(e, cls)   = e.mem[h];
     ALC_LEN(e, cls) -= 1ull << cls;
     return h;
@@ -3849,6 +3868,7 @@ INLINE void heap_free(Env e, u32 cls, u64 loc) {
     return;
   }
   e.mem[loc]       = ALC_AT(e, cls);
+  HEAP_POISON(e.mem, loc, 1ull << cls);
   ALC_AT(e, cls)   = loc;
   ALC_LEN(e, cls) += 1ull << cls;
   if (!DEVICE && ALC_LEN(e, cls) >= KEEP_WORDS) {
@@ -4338,7 +4358,13 @@ static const WlFn wl_tab[] = { WL_TABLE };
 #undef WL_X
 #endif
 
-static Term work_loop(Env e, DEV Term* sp, Term t, u32 seq) {
+// work_loop is the one C-convention caller of the preserve_none segments,
+// and stays out of line: a frame that realigns its stack (ASan's do) keeps
+// its base pointer in x19 on arm64, which a preserve_none callee may
+// clobber and clang does not save around the call, so an inlined entry
+// read its caller's frame through garbage. Its own frame needs no base
+// pointer and saves x19 by the C convention.
+FAR Term work_loop(Env e, DEV Term* sp, Term t, u32 seq) {
   WL_BANK
   u32 rn = 0;
   r0 = t;
