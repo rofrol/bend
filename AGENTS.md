@@ -18,7 +18,11 @@ lines its run must print, and the gates run on the mini cluster.
                         text, which bend2 checks again and safe.ts elaborates
     bend2/defun_check.ts  the fail-closed validator of that translation
                         (its rule set heads the file) and policy T1
-    tools/defun/        translate.ts (print a translation), verdict-tests.sh
+    bend2/defun_upstream.ts  C006c: runs the pinned upstream elaborator
+                        (bend2/upstream/: exact copies of upstream bend.ts,
+                        safe.ts, base.bend at 014ccd03, MANIFEST.sha256;
+                        never edit them) whose BendTT the kernel checks
+    tools/defun/        upstream-tests.ts (C006c), translate.ts (print a translation), verdict-tests.sh
                         (tests/closure/verdict), diff-tests.sh (source vs
                         translation on upstream Bend), mutate.ts (the
                         validator's mutation tests)

@@ -57,6 +57,7 @@ import * as B from "./bend.ts";
 import type { Book, Def, HTerm, Name, Quant, ADT } from "./bend.ts";
 import * as Defun from "./defun.ts";
 import * as DefunCheck from "./defun_check.ts";
+import * as Upstream from "./defun_upstream.ts";
 
 // Types
 // =====
@@ -1687,9 +1688,10 @@ export function safe_check(book: Book): string | null {
 export const DEFUN_PASS = "EMITTED TRANSLATION ACCEPTED BY KERNEL (callable-many closures defunctionalized)";
 
 export const DEFUN_NOTE = "An independent validator checked the defunctionalization between the source and the"
-  + " translated Bend program. The step from that program to the BendTT text the kernel checked is bend2's own"
-  + " unverified elaborator, as for every program, and was checked only for structure. This does not establish"
-  + " that the source's behavior or laws are preserved; ownership rules are checked only by the source checker.";
+  + " translated Bend program. The BendTT text the kernel checked was produced from that validated translation by an"
+  + " unmodified upstream elaborator (Bend " + Upstream.UPSTREAM_REV.slice(0, 8) + ", pinned by hash), the same trust"
+  + " as any upstream --verdict. This does not establish that the source's behavior or laws are preserved;"
+  + " ownership rules are checked only by the source checker.";
 
 // the stages, for the validator's mutation tests (tools/defun/mutate.ts):
 // the elaboration of a book without *-> and the kernel's verdict on a text
@@ -1701,21 +1703,47 @@ export function safe_kernel(text: string): string | null {
   return kernel_check(text);
 }
 
+// test hooks (tools/defun/upstream-tests.ts): a change to this fork's
+// own elaboration, or to the translation upstream reads
+export type DefunHooks = { fork?: (text: string) => string };
+
 // the BendTT text of a book with *-> and its translation (Bend text), or
-// a Defun.Refusal thrown
-export async function safe_defun(book: Book): Promise<{ text: string; bend: string }> {
+// a Defun.Refusal thrown. The translation is written once, into a private
+// dir; bend2 (this fork) checks it for the validator, and the pinned
+// upstream elaborator (defun_upstream.ts) turns the same bytes into the
+// kernel's input. This fork's own elaboration of it must give the same
+// bytes (a tripwire: the validator reads the fork's checked book, so a
+// fork and upstream that disagree on the translation refuse)
+export async function safe_defun(book: Book, hooks: DefunHooks = {}): Promise<{ text: string; bend: string }> {
   const bend = Defun.defun_translate(book);
-  const tbook = await Defun.defun_recheck(bend);
-  const got = safe_book(tbook);
-  if (got.oos.length !== 0) {
-    throw new Defun.Refusal("the emitted translation is out of the kernel's scope:\n"
-      + got.oos.map(([k, why]) => "- " + B.name_key(k) + ": " + why).join("\n"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bend-defun-"));
+  try {
+    const file = path.join(dir, "defun.bend");
+    fs.writeFileSync(file, bend, { flag: "wx", mode: 0o400 });
+    const tbook = await Defun.defun_recheck_file(file);
+    let text: string;
+    try {
+      text = Upstream.upstream_elaborate(file);
+    } catch (e) {
+      if (e instanceof Upstream.UpstreamRefusal) {
+        throw new Defun.Refusal(e.why);
+      }
+      throw e;
+    }
+    const own = safe_book(tbook);
+    const mine = hooks.fork === undefined ? own.text : hooks.fork(own.text);
+    if (own.oos.length !== 0 || mine !== text) {
+      throw new Defun.Refusal("tripwire: this fork's elaboration of the translation differs from upstream "
+        + Upstream.UPSTREAM_REV.slice(0, 8) + "'s" + (own.oos.length !== 0 ? " (out of scope here)" : ""));
+    }
+    const bad = DefunCheck.validate(book, tbook, text);
+    if (bad.length !== 0) {
+      throw new Defun.Refusal("the validator rejected the emitted translation (fail closed):\n- " + bad.join("\n- "));
+    }
+    return { text, bend };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
-  const bad = DefunCheck.validate(book, tbook, got.text);
-  if (bad.length !== 0) {
-    throw new Defun.Refusal("the validator rejected the emitted translation (fail closed):\n- " + bad.join("\n- "));
-  }
-  return { text: got.text, bend };
 }
 
 // --verdict on a book with *->: refused (why), rejected by the kernel

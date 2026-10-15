@@ -379,8 +379,13 @@ async function cli_emit(book: Bend.Book, out: string): Promise<void> {
   } else if (out.endsWith(".c")) {
     fs.writeFileSync(out, Comp.compile_book(book));
   } else if (out.endsWith(".bendtt") && Bend.book_many_at(book) !== null) {
+    // the old file goes first, and the new one lands whole (a rename), so
+    // no stale or partial file stands for this run
+    fs.rmSync(out, { force: true });
     try {
-      fs.writeFileSync(out, (await Safe.safe_defun(book)).text);
+      const tmp = out + ".tmp-" + String(process.pid);
+      fs.writeFileSync(tmp, (await Safe.safe_defun(book)).text, { flag: "wx" });
+      fs.renameSync(tmp, out);
     } catch (e) {
       if (e instanceof Defun.Refusal) {
         throw "Error: -o " + out + " cannot translate this book's callable-many closures (C006 phase 1): " + e.why;

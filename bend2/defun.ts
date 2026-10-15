@@ -1297,20 +1297,24 @@ export async function defun_recheck(text: string): Promise<Book> {
   try {
     const file = path.join(dir, "defun.bend");
     fs.writeFileSync(file, text, { flag: "wx" });
-    const book = B.book_nil();
-    try {
-      await B.book_load(book, file, "", new Map());
-      B.book_valid(book);
-    } catch (e) {
-      const err = e as B.Err;
-      refuse("the emitted translation does not check:\n" + (err?.$ === "Err" ? B.err_show(err) : String(e)));
-    }
-    if (book.hols > 0) {
-      refuse("the emitted translation has holes");
-    }
-    return book;
+    return await defun_recheck_file(file);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
+// the same, on a translation file the caller wrote
+export async function defun_recheck_file(file: string): Promise<Book> {
+  const book = B.book_nil();
+  try {
+    await B.book_load(book, file, "", new Map());
+    B.book_valid(book);
+  } catch (e) {
+    const err = e as B.Err;
+    refuse("the emitted translation does not check:\n" + (err?.$ === "Err" ? B.err_show(err) : String(e)));
+  }
+  if (book.hols > 0) {
+    refuse("the emitted translation has holes");
+  }
+  return book;
+}

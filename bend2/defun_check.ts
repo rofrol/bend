@@ -109,7 +109,12 @@
 // - K2 also checks each field's kernel type against the body def's
 //   kernel parameter type; K5 also checks that a lambda site's tuple
 //   holds distinct variables (its captures).
-// - The verdict's statement (T7) says what this covers: the validator
+// - C006c: K is the text the pinned, unmodified upstream elaborator
+//   (bend2/defun_upstream.ts, Bend 014ccd03, hash-pinned) produced from
+//   the translation, and the kernel checks exactly those bytes; this
+//   fork's own elaboration must equal them (a tripwire in safe.ts), so T,
+//   which bend2 here checked, is the program upstream elaborated.
+// - The verdict's statement (T7) said, before C006c, what this covers: the validator
 //   checks the defunctionalization between the source and the translated
 //   Bend; the step to BendTT is bend2's own unverified elaborator, as for
 //   every program, checked here for structure only (a content check at

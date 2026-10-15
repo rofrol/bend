@@ -1,0 +1,9 @@
+# Exact copies of Bend upstream at 014ccd03c43270c151f46679075f7f04593077ea
+# (bend2/bend.ts, bend2/safe.ts, bend2/base.bend), unmodified: the pinned
+# elaborator of C006c (bend2/defun_upstream.ts verifies these hashes before
+# every use). The last line pins the kernel source this fork builds
+# (bend2/bendtt.lean), which must equal upstream's at the same revision.
+22b5915cd7cccd23b6aa28849b23a7f1e3549333cdd0954ab48103ddd0777e9e  bend.ts
+d45f4bc8342ac7eb91edeac52233341313478e1320d54de59dfb4738acdccd31  safe.ts
+b6d3b90b6cfe33467a762e7515e0a6e8edc060189da6f3c05e63806663c943eb  base.bend
+cc78aa9ff3491ff1b788797bdcab4cb98107dcb1730ed99834f6933b11d88335  ../bendtt.lean
