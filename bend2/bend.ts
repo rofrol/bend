@@ -247,8 +247,10 @@
 // *x => f captures only Data, each capture charged once (certify-once:
 // each call copies the environment); a def, or one partially applied to
 // Data, fits A *-> B too. no other conversion: A *-> B and A -> B differ.
-// the kernel and the backends have no such closure yet, so --verdict and
-// every backend refuse a book that spells one (book_many_refuse).
+// the kernel has no such closure yet, so --verdict refuses a book that
+// spells one (book_many_refuse), and so does the C lane with a ! call.
+// a backend shares the closure when its binder is called more than once:
+// a call copies the environment, a move hands the closure over.
 // an @unsafe def opts out of the wall: its self-calls skip descent, its
 // binder domains form + at any kind, and it calls an unfilled law or a
 // def below it, so the claims above do not cover a book that uses one.
@@ -3961,8 +3963,11 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
     }
   }
   const x_inf = term_infer(book, lhs, tm, qt, ctx, d);
-  if (term_compare("LE", book, x_inf.ty, ty, d) || term_lift(book, lhs, tm, x_inf.ty, ty, ctx, d)) {
+  if (term_compare("LE", book, x_inf.ty, ty, d)) {
     return x_inf;
+  }
+  if (term_lift(book, lhs, tm, x_inf.ty, ty, ctx, d)) {
+    return Check((x_inf.tm as Extract<LTerm, { $: "Ann" }>).x, ty, x_inf.us);
   }
   throw Err(book, ctx, ty, x_inf.ty, tm.s, lhs.def);
 }
@@ -4112,10 +4117,18 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 // (a seeded book keeps it), so it is no claim.
 
 // a book that holds *-> or *x => stops at a backend or a kernel that has
-// no callable-many closure yet, named by what: the parser marks the book
+// no callable-many closure yet (the kernel; the C lane with a ! call),
+// named by what: the parser marks the book
 // (book.many), and a book built otherwise is scanned, every declared type
 // and def body for an All or a Lam flagged c
 export function book_many_refuse(book: Book, what: string): void {
+  const at = book_many_at(book);
+  if (at !== null) {
+    throw Err(book, ctx_nil(), "callable-many closures are not supported by " + what + " yet", undefined, at.file.str === "" ? undefined : at);
+  }
+}
+
+export function book_many_at(book: Book): Span | null {
   function find(t: unknown): Span | null {
     if (t === null || typeof t !== "object") {
       return null;
@@ -4140,9 +4153,7 @@ export function book_many_refuse(book: Book, what: string): void {
       at = find(term_lower(ts[j]));
     }
   }
-  if (at !== null) {
-    throw Err(book, ctx_nil(), "callable-many closures are not supported by " + what + " yet", undefined, at.file.str === "" ? undefined : at);
-  }
+  return at;
 }
 
 export function book_valid(book: Book, done: number = 0): void {

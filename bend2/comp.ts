@@ -707,22 +707,26 @@ function term_spine(tm: HTerm): Spine {
   });
 }
 
-function term_eta(t: HTerm, T: HTerm, n: number): HTerm {
+function term_eta(t: HTerm, T: HTerm, n: number, c = false): HTerm {
   if (n === 0) {
     return t;
   }
   const all = ty_all(T);
   return Bend.Ann(Bend.Lam("x", 0, (y: HTerm) =>
-    term_eta(Bend.App(t, y), all.B(y), n - 1)), T);
+    term_eta(Bend.App(t, y), all.B(y), n - 1), undefined, undefined, c), T);
 }
 
-function call_eta(t: HTerm): HTerm | null {
+// a partial application checked at A *-> B (R6) is a callable-many
+// closure over its arguments
+function call_eta(t: HTerm, ty: HTerm | null = null): HTerm | null {
   const m = term_spine(t);
   const f = m.t.$ === "Ref" ? fun_of(m.t.k) : null;
   if (m.tld?.$ !== "Def" || f === null || m.args.length >= f.live.length) {
     return null;
   }
-  return term_eta(t, tele_fill(m.tld.T, m.all), f.n - m.all.length);
+  const w = ty_wnf(ty);
+  return term_eta(t, tele_fill(m.tld.T, m.all), f.n - m.all.length,
+    w?.$ === "All" && w.c === true);
 }
 
 function term_kids(tm: HTerm): HTerm[] {
@@ -1582,10 +1586,10 @@ function seg_ref(sc: Scope, fid: string): string {
   return fid;
 }
 
-function seg_clo(sc: Scope, fid: string, words: string[]): string {
+function seg_clo(sc: Scope, fid: string, words: string[], shr = false): string {
   FL.clos.add(fid);
   return `term_clo(${seg_ref(sc, fid)}, ${words.length === 0 ? 0 : node_fill(
-    sc, "nd", `heap_alloc(e, cls_fit(${words.length}))`, words)})`;
+    sc, "nd", `heap_alloc(e, cls_fit(${words.length}))`, words, shr)})`;
 }
 
 function seg_name(sc: Scope, stem: string): string {
@@ -1839,9 +1843,12 @@ function bind_pop(sc: Scope, x: HTerm): Val {
     return b.val;
   }
   bind_set(sc, p, b, b.n - 1);
+  const many = ty_wnf(b.A)?.$ === "All" && (ty_wnf(b.A) as Of<"All">).c === true;
   val_owned(sc, b.val).forEach((w) => {
     file_push(sc, `${w} = term_keep(e, ${w}, 1);`);
-    facts_hot(sc, b.A, true);
+    if (!many) {
+      facts_hot(sc, b.A, true);
+    }
   });
   return b.val;
 }
@@ -2291,7 +2298,13 @@ function emit_clo(sc: Scope, x: HTerm, ty: HTerm | null): Val {
     });
   const words = live.flatMap(([, b]) => val_own(sc, b.val));
   const name = seg_name(sc, "c");
-  const clo = seg_clo(sc, seg_fid(name), words);
+  // a callable-many closure may be shared: Clo~apply then copies its
+  // environment words, so each is sealed (its Data type hot)
+  const many = x.$ === "Lam" && x.c === true;
+  if (many) {
+    live.forEach(([, b]) => facts_hot(sc, b.A, true));
+  }
+  const clo = seg_clo(sc, seg_fid(name), words, many);
   const arg = val_new([name_local(sc, "x")], BOX);
   emit_body(seg_open(sc, name, BOX, null, live, arg, [x]), x, ty, [], [arg],
     null);
@@ -2452,7 +2465,7 @@ function emit_expr(sc: Scope, tm: HTerm, ty0: HTerm | null,
         emit_fuse(sc, m, dst);
         return dst;
       }
-      const y = call_eta(x)
+      const y = call_eta(x, ty)
         ?? (m.t.$ !== "Ref" && m.args.length === 0 ? m.h : null);
       if (y !== null) {
         return emit_expr(sc, y, ty, at);
@@ -2803,7 +2816,6 @@ function effect_srcs(ext: string, miss: string): string[] {
 // ladder, as clang builds the phi cascade of a fallthrough switch in O(n^2).
 
 export function compile_book(book: Bend.Book): string {
-  Bend.book_many_refuse(book, "this backend");
   FL = file_new(book, false);
   // a pure main's descriptor names constructors of the types it prints,
   // so their datatypes are roots too
@@ -2841,6 +2853,11 @@ export function compile_book(book: Bend.Book): string {
       }
     }));
   } while (was !== facts());
+  // a ! call puts code on the GPU lane, whose shared callable-many closures
+  // are untested: a book with both is refused
+  if (FL.bangs.size > 0) {
+    Bend.book_many_refuse(book, "the C backend together with ! (GPU offload)");
+  }
   const edges = [...FL.segs, ...FL.spins].flatMap((s) =>
     [...s.refs].map((r) => [s.fid, r]));
   const reach = (from: string[]) => graph_close(new Set(from), edges);
@@ -3190,7 +3207,6 @@ function host(A: HTerm | null, x: string, out = 0): string {
 // A module (for the .bend loader and -o <out>.mjs) roots and exports each
 // def a host can call.
 export function js_lib(book: Bend.Book, mod = false): string {
-  Bend.book_many_refuse(book, "this backend");
   FL = file_new(book, true);
   const outs = !mod ? null : [...new Set(FL.book.order)].filter((k) => {
     const t = FL.book.tlds[k];
@@ -3867,7 +3883,7 @@ INLINE bool term_triv(Term t) {
 }
 
 OUTLINE Term rfc_wrap(Env e, Term t, u32 cnt) {
-  if (term_tag(t) == TAG_CLO || term_tag(t) == TAG_TSK) {
+  if (term_tag(t) == TAG_TSK) {
     err_post(e.mem, ERR_RFCS);
     return t;
   }
@@ -4362,6 +4378,10 @@ ${segs}
     WL_RETN(1);
   }}
 
+  // a shared closure (a callable-many one, called while another
+  // reference lives) is not consumed: the call takes a reference to each
+  // environment word, sealed when the closure was built, and drops its
+  // own reference to the node, as ctr_take does for a shared node
   WL_CASE(FID(Clo~apply))
   {
     Term fun = r0;
@@ -4369,9 +4389,17 @@ ${segs}
     WL_OPEN
     u32 f    = (u32)term_aux(fun);
     u32 war  = fid_arity(f) - 1;
-    u64 a    = term_loc(fun);
+    u64 a    = term_peek(e.mem, fun);
     WL_LOAD(a, war)
-    spare_free(e, cls_fit(war), a);
+    if (!term_rfc(fun)) {
+      spare_free(e, cls_fit(war), a);
+    } else if ((a32_load(a32_at(e.mem, term_loc(fun))) & RFC_CNT) == 1) {
+      a32_acq(a32_at(e.mem, term_loc(fun)));
+      heap_free(e, 0, term_loc(fun));
+      spare_free(e, cls_fit(war), a);
+    } else {
+      span_fade(e, fun, a, war);
+    }
     WL_LAST(arg)
     WL_DYN(f);
   }}
