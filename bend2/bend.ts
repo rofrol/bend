@@ -3486,13 +3486,12 @@ export function term_infer(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ctx: Ctx,
       if (f_wnf.$ !== "All") {
         throw Err(book, ctx, "a function type", f_inf.ty, tm.s, lhs.def);
       }
+      // only a bare bound head marks a call: its inference measured that
+      // one occurrence (qt) and nothing else, so Call replaces exactly it;
+      // any other head (a share cell, an annotation) stays a move
       let f_us = f_inf.us;
-      let head = tm.f;
-      while (head.$ === "Var" && head.i < 0 && head.v !== undefined) {
-        head = head.v;
-      }
-      if (f_wnf.c === true && qt.$ !== "None" && head.$ === "Var" && head.i >= 0) {
-        f_us = pmap_set(f_us, head.i, { $: "Call" });
+      if (f_wnf.c === true && qt.$ !== "None" && tm.f.$ === "Var" && tm.f.i >= 0) {
+        f_us = uses_add(pmap_set(f_us, tm.f.i, None()), pmap_set(uses_nil(), tm.f.i, { $: "Call" }));
       }
       const x_chk = term_check(book, lhs, tm.x, quant_dem(f_wnf.q, qt), f_wnf.A, ctx, d);
       return Infer(App(f_inf.tm, x_chk.tm, tm.s), f_wnf.B(tm.x), uses_add(f_us, x_chk.us));
@@ -3566,7 +3565,9 @@ export function tele_check(book: Book, lhs: LHS, tel: HTerm, xs: HTerm[], qt: Qu
 // met again is assumed, coinductively); a base handle (a bodiless law of
 // Base whose type ends in a kind; a template's ~ constant is not one, as
 // its instance unfolds) on the same terms; an equation over a
-// first-order type between closed endpoints. any other type fails: an
+// first-order type between closed endpoints (closed after normalizing).
+// an erased (-) field is absent from storage and dead, so it is not
+// judged (SPEC 7.1: live fields). any other type fails: an
 // arrow, a universe, Quant, a variable, a stuck family. a field variable
 // may stand in a value position only, so the judgment is stable under
 // substitution of the context; a datatype nesting past 256 levels fails.
@@ -3576,7 +3577,7 @@ export function term_first_order(book: Book, T: HTerm, d: number): HTerm | null 
   let fv = d;
   function closed(x: HTerm): boolean {
     let ok = true;
-    JSON.stringify(term_lower(x, TOP), (k, v) => {
+    JSON.stringify(term_lower(term_snf(book, x), TOP), (k, v) => {
       if (k === "s") {
         return undefined;
       }
@@ -3837,6 +3838,8 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
     //       h's lhs steps by k{x1, .., xn} while a parameter remains
     //       m is dead past D's last constructor k: a default there (a
     //       flattened fallback) is \{}, unvisited; a case still checks
+    //       T is no A *-> B (a match lambda is affine, as x => f is);
+    //       past the def's parameters it is a closure: uses_move
     // -------------------------------------------------------------- check-mat
     // Γ ⊢ \ {k: h; m} : T ~ hu | mu
     //
@@ -3852,6 +3855,9 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
       const t_wnf = term_wnf(book, ty);
       if (t_wnf.$ !== "All") {
         throw Err(book, ctx, ty, "non-inferrable term", tm.s, lhs.def);
+      }
+      if (t_wnf.c === true) {
+        throw Err(book, ctx, ty, "a match lambda (affine; a *-> type takes *x => f(x), f a def that matches)", tm.s, lhs.def);
       }
       if (qt.$ !== "None" && t_wnf.q.$ === "None") {
         throw Err(book, ctx, "a live scrutinee (a - scrutinee matches only in a dead region)", undefined, tm.s, lhs.def);
@@ -3896,7 +3902,7 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
           const m_chk = rem.length === 1 && tm.m.$ !== "Mat" ? Check(Efq(tm.s), m_gol, uses_nil()) : term_check(book, lhs, tm.m, qt, m_gol, ctx, d);
           const [hu, mu] = lhs.n === 0 ? [uses_move(h_chk.us), uses_move(m_chk.us)] : [h_chk.us, m_chk.us];
           const us = pmap_union(hu, mu, use_join);
-          return Check(Mat(tm.k, h_chk.tm, m_chk.tm, tm.s), ty, t_wnf.c === true ? uses_capture(book, lhs, ctx, us, qt, d, tm.s) : us);
+          return Check(Mat(tm.k, h_chk.tm, m_chk.tm, tm.s), ty, us);
         }
       }
     }
@@ -3962,9 +3968,11 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
 }
 
 // a top-level def captures nothing, and a partial application of one
-// captures its arguments: at a callable-many goal it fits when every
-// live argument's parameter is Data and its type, its next arrow read
-// as *->, fits the goal
+// captures its arguments: at a callable-many goal it fits when it takes
+// fewer arguments than its parameters (so the arrow left is the def's
+// own parameter, never a closure its body returns), every live
+// argument's parameter is Data, and its type, its next arrow read as
+// *->, fits the goal
 export function term_lift(book: Book, lhs: LHS, tm: HTerm, A: HTerm, ty: HTerm, ctx: Ctx, d: number): boolean {
   const g = term_wnf(book, ty);
   const a = term_wnf(book, A);
@@ -3973,7 +3981,7 @@ export function term_lift(book: Book, lhs: LHS, tm: HTerm, A: HTerm, ty: HTerm, 
   }
   const [h, xs] = term_unapply(term_strip(tm));
   const tld = h.$ === "Ref" ? book.tlds[h.k] : undefined;
-  if (tld === undefined || tld.$ !== "Def" || tld.x > 0) {
+  if (tld === undefined || tld.$ !== "Def" || tld.x > 0 || xs.length >= tld.n) {
     return false;
   }
   let tel = tld.T;
@@ -4103,11 +4111,37 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 // (infer-ref) while the caller is declared; it stays outside the order
 // (a seeded book keeps it), so it is no claim.
 
-// a book that spells *-> or *x => (book.many) stops at a backend or a
-// kernel that has no callable-many closure yet, named by what
+// a book that holds *-> or *x => stops at a backend or a kernel that has
+// no callable-many closure yet, named by what: the parser marks the book
+// (book.many), and a book built otherwise is scanned, every declared type
+// and def body for an All or a Lam flagged c
 export function book_many_refuse(book: Book, what: string): void {
-  if (book.many !== undefined) {
-    throw Err(book, ctx_nil(), "callable-many closures are not supported by " + what + " yet", undefined, book.many);
+  function find(t: unknown): Span | null {
+    if (t === null || typeof t !== "object") {
+      return null;
+    }
+    const o = t as Record<string, unknown>;
+    if ((o.$ === "All" || o.$ === "Lam") && o.c === true) {
+      return (o.s as Span | undefined) ?? { file: { str: "", ns: "", al: {} }, beg: 0, end: 0 };
+    }
+    for (const k in o) {
+      const at = k === "s" ? null : find(o[k]);
+      if (at !== null) {
+        return at;
+      }
+    }
+    return null;
+  }
+  let at: Span | null = book.many ?? null;
+  for (const k in book.tlds) {
+    const t = book.tlds[k];
+    const ts = t.$ === "ADT" ? [t.T, ...t.c.map((c) => c.T)] : t.v === null ? [t.T] : [t.T, t.v];
+    for (let j = 0; at === null && j < ts.length; j++) {
+      at = find(term_lower(ts[j]));
+    }
+  }
+  if (at !== null) {
+    throw Err(book, ctx_nil(), "callable-many closures are not supported by " + what + " yet", undefined, at.file.str === "" ? undefined : at);
   }
 }
 
