@@ -1686,9 +1686,10 @@ export function safe_check(book: Book): string | null {
 
 export const DEFUN_PASS = "EMITTED TRANSLATION ACCEPTED BY KERNEL (callable-many closures defunctionalized)";
 
-export const DEFUN_NOTE = "The kernel accepted the emitted translation. The defunctionalization is unverified;"
-  + " a validator checked its structure. This does not establish that the source program's behavior or laws are"
-  + " preserved, and ownership rules are checked only by the source checker.";
+export const DEFUN_NOTE = "An independent validator checked the defunctionalization between the source and the"
+  + " translated Bend program. The step from that program to the BendTT text the kernel checked is bend2's own"
+  + " unverified elaborator, as for every program, and was checked only for structure. This does not establish"
+  + " that the source's behavior or laws are preserved; ownership rules are checked only by the source checker.";
 
 // the stages, for the validator's mutation tests (tools/defun/mutate.ts):
 // the elaboration of a book without *-> and the kernel's verdict on a text

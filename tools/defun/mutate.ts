@@ -66,6 +66,18 @@ const kedits: Array<[string, string, (k: string) => string]> = [
     })],
   ["wrong apply signature", "apply_U32_U32's kernel type returns Nat",
     (k) => k.replace(/^(apply_U32_U32 : .*-> )U32 =$/m, "$1Nat =")],
+  ["an extra def", "append a def junk",
+    (k) => k + "\njunk : U32 =\n  U32.lit1\n"],
+  ["a duplicated generated def", "append a second copy of apply_U32_U32",
+    (k) => k + "\n" + (block(k, "apply_U32_U32").exec(k)?.[0] ?? "").replace(/^\n/, "")],
+  ["a user def shadowing a generated name", "the kernel def double renamed " + labs[0] + "_run",
+    (k) => k.replace(/^double :/m, labs[0] + "_run :")],
+  ["a field of the wrong type", "Clo_U32_U32.arms gives " + labs[0] + "'s first field the type Nat",
+    (k) => k.replace(/^(Clo_U32_U32\.arms :[^\n]*\n)([^\n]*)/m, (_, h, l) =>
+      h + l.replace(new RegExp("(\\." + labs[0] + ": Σx0 : )U32"), "$1Nat"))],
+  ["a capture passed twice", "main's " + labs[0] + " tuple repeats its first field",
+    (k) => k.replace(/^(main :[^\n]*\n[^\n]*)/m, (l) => l.replace(new RegExp("\\(\\." + labs[0] + ", \\((x\\d+), \\(x\\d+, "),
+      "(." + labs[0] + ", ($1, ($1, "))],
 ];
 
 let fails = 0;

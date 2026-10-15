@@ -11,4 +11,4 @@ def main() -> U32:
   (m(1) + m(2) + n(1) + n(2) : U32)
 
 #|EMITTED TRANSLATION ACCEPTED BY KERNEL (callable-many closures defunctionalized)
-#|The kernel accepted the emitted translation. The defunctionalization is unverified; a validator checked its structure. This does not establish that the source program's behavior or laws are preserved, and ownership rules are checked only by the source checker.
+#|An independent validator checked the defunctionalization between the source and the translated Bend program. The step from that program to the BendTT text the kernel checked is bend2's own unverified elaborator, as for every program, and was checked only for structure. This does not establish that the source's behavior or laws are preserved; ownership rules are checked only by the source checker.

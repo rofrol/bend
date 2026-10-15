@@ -100,9 +100,20 @@
 // - L3/R/A compare a source type with a translated one structurally and,
 //   failing that, up to bend2's conversion in T (a family index such as
 //   zero(n) goes out normalized, as 0n).
-// - K1 checks that each own item of T has its kernel defs; it does not
-//   prove the absence of other kernel defs (Base's and instances are
-//   there too).
+// - K1 is exact (consult round 20261015-142035-a8c0): the kernel defs
+//   of T's own items are exactly their names (a datatype D: D, D.arms,
+//   and D.efq when empty), with no duplicate; every other kernel def must
+//   come from Base (a Base item's name, or it with a suffix, no own name
+//   a longer prefix). An own item that goes out under another name (a
+//   quantity instance, a group) fails closed.
+// - K2 also checks each field's kernel type against the body def's
+//   kernel parameter type; K5 also checks that a lambda site's tuple
+//   holds distinct variables (its captures).
+// - The verdict's statement (T7) says what this covers: the validator
+//   checks the defunctionalization between the source and the translated
+//   Bend; the step to BendTT is bend2's own unverified elaborator, as for
+//   every program, checked here for structure only (a content check at
+//   the kernel level is deferred, C006c).
 // - K4 accepts the call η-long: the kernel elaborates a function-typed
 //   result (IO(..) is one) with extra binders after x, passed last, and an
 //   argument of function type as its η-expansion.
@@ -1358,13 +1369,37 @@ function run_rules(S: Book, T: Book, ktext: string, bad: string[]): void {
     }
     kd.set(d.k, d);
   }
+  // K1, exact: the kernel defs of T's own items are exactly their names
+  // (a datatype D: D, D.arms, and D.efq when it has no constructor);
+  // every other kernel def comes from Base: its name is a Base item's,
+  // or one with a suffix (.arms, .lit2, _1, ..), and no own item's name
+  // is a longer prefix of it
+  const tt = (k: string): string => B.name_key(k).replace(/[^A-Za-z0-9_.]|^[.0-9]/g,
+    (c) => "_" + (c.codePointAt(0) ?? 0).toString(16) + "_");
+  const want = new Map<string, string>();
   for (const k of tk) {
     const t = T.tlds[k];
-    const need = t.$ === "ADT" ? [k, k + ".arms"] : [k];
-    for (const n of need) {
-      if (!kd.has(n)) {
-        no("K1", "the kernel text has no def " + n);
-      }
+    const n = tt(k);
+    for (const m of t.$ === "ADT" ? [n, n + ".arms", ...(t.c.length === 0 ? [n + ".efq"] : [])] : [n]) {
+      want.set(m, k);
+    }
+  }
+  for (const [n, k] of want) {
+    if (!kd.has(n)) {
+      no("K1", "the kernel text has no def " + n + " (for " + B.name_key(k) + ")");
+    }
+  }
+  const owns = [...new Set(tk.map(tt))];
+  const bases = Object.keys(T.tlds).filter((k) => T.tlds[k].b === true).map(tt);
+  const pre = (n: string, k: string): boolean => n === k || n.startsWith(k + ".") || /^_\d+$/.test(n.slice(k.length)) && n.startsWith(k);
+  for (const n of kd.keys()) {
+    if (want.has(n)) {
+      continue;
+    }
+    const o = owns.filter((k) => pre(n, k, false)).sort((a, b) => b.length - a.length)[0];
+    const b = bases.filter((k) => pre(n, k, true)).sort((a, b) => b.length - a.length)[0];
+    if (b === undefined || (o !== undefined && o.length >= b.length)) {
+      no("K1", "the kernel def " + n + " is no item of the translation" + (o === undefined ? "" : " (beside " + o + ")"));
     }
   }
   const nfields = new Map<string, number>();
@@ -1390,9 +1425,22 @@ function run_rules(S: Book, T: Book, ktext: string, bad: string[]): void {
       }
       let sg = m.h;
       let n = 0;
+      const fts: KT[] = [];
       while (sg.$ === "Sig") {
         n++;
+        fts.push(sg.A);
         sg = sg.B;
+      }
+      // K2: each field's kernel type is the body def's parameter type
+      const R = [...runs.entries()].find(([, r]) => r.ctor === c.k)?.[0];
+      let rt: KT | undefined = R === undefined ? undefined : kd.get(R)?.T;
+      for (let j = 0; j < fts.length; j++) {
+        if (rt === undefined || rt.$ !== "All" || !k_eq(rt.A, fts[j])) {
+          no("K2", D + ".arms gives " + c.k + "'s field " + String(j) + " a type its body def " + String(R)
+            + " does not take there");
+          break;
+        }
+        rt = rt.B;
       }
       if (n !== c.n || sg.$ !== "Enu" || sg.ks.join(",") !== "()") {
         no("K2", D + ".arms gives " + c.k + " " + String(n) + " fields, not " + String(c.n));
@@ -1493,6 +1541,16 @@ function run_rules(S: Book, T: Book, ktext: string, bad: string[]): void {
         }
         if (n !== nfields.get(x.a.k) || b.$ !== "Lab" || b.k !== "()") {
           no("K5", "a kernel " + x.a.k + " tuple in " + k + " has " + String(n) + " fields, not " + String(nfields.get(x.a.k)));
+        }
+        // K5: a lambda site's fields are its captures: distinct variables
+        if (ctor_site.get(x.a.k)?.kind === "lam") {
+          const vs: number[] = [];
+          for (let f = x.b; f.$ === "Tup"; f = f.b) {
+            vs.push(f.a.$ === "Var" ? f.a.i : -1);
+          }
+          if (vs.some((v, j) => v < 0 || vs.indexOf(v) !== j)) {
+            no("K5", "a kernel " + x.a.k + " tuple in " + k + " does not hold distinct variables (its captures)");
+          }
         }
         kn.add("." + x.a.k);
       }
