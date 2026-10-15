@@ -725,8 +725,23 @@ function call_eta(t: HTerm, ty: HTerm | null = null): HTerm | null {
     return null;
   }
   const w = ty_wnf(ty);
-  return term_eta(t, tele_fill(m.tld.T, m.all), f.n - m.all.length,
-    w?.$ === "All" && w.c === true);
+  const T = tele_fill(m.tld.T, m.all);
+  if (w?.$ !== "All" || w.c !== true) {
+    return term_eta(t, T, f.n - m.all.length);
+  }
+  // a callable-many closure evaluates a computed argument once, when it
+  // is built, and captures the value, as emit_fold binds one
+  const doms = tele_unbind(m.tld.T).doms;
+  const bind = (i: number, ys: HTerm[]): HTerm => {
+    const a = m.all[i];
+    return i === m.all.length ? term_eta(ys.reduce<HTerm>((g, y) =>
+      Bend.App(g, y), m.t), T, f.n - m.all.length, true)
+      : !m.args.includes(a) || term_const(a) || term_strip(a).$ === "Var"
+      ? bind(i + 1, [...ys, a])
+      : Bend.Let(["a"], [0], [Bend.Ann(a, doms[i][2])], (xs) =>
+        bind(i + 1, [...ys, xs[0]]), undefined, [Bend.Many()]);
+  };
+  return bind(0, []);
 }
 
 function term_kids(tm: HTerm): HTerm[] {
@@ -3024,7 +3039,7 @@ function js_expr(sc: Scope, tm: HTerm, ty0: HTerm | null = null): string {
       if (m.k !== null) {
         return js_call(sc, m.k, m.xs);
       }
-      const y = call_eta(x) ?? (m.t.$ !== "Ref" ? m.h : null);
+      const y = call_eta(x, ty) ?? (m.t.$ !== "Ref" ? m.h : null);
       if (y !== null) {
         return js_expr(sc, y, ty);
       }

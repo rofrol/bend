@@ -3967,7 +3967,7 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
     return x_inf;
   }
   if (term_lift(book, lhs, tm, x_inf.ty, ty, ctx, d)) {
-    return Check((x_inf.tm as Extract<LTerm, { $: "Ann" }>).x, ty, x_inf.us);
+    return Check(x_inf.tm.$ === "Ann" ? x_inf.tm.x : x_inf.tm, ty, x_inf.us);
   }
   throw Err(book, ctx, ty, x_inf.ty, tm.s, lhs.def);
 }
