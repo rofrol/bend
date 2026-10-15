@@ -2803,6 +2803,7 @@ function effect_srcs(ext: string, miss: string): string[] {
 // ladder, as clang builds the phi cascade of a fallthrough switch in O(n^2).
 
 export function compile_book(book: Bend.Book): string {
+  Bend.book_many_refuse(book, "this backend");
   FL = file_new(book, false);
   // a pure main's descriptor names constructors of the types it prints,
   // so their datatypes are roots too
@@ -3189,6 +3190,7 @@ function host(A: HTerm | null, x: string, out = 0): string {
 // A module (for the .bend loader and -o <out>.mjs) roots and exports each
 // def a host can call.
 export function js_lib(book: Bend.Book, mod = false): string {
+  Bend.book_many_refuse(book, "this backend");
   FL = file_new(book, true);
   const outs = !mod ? null : [...new Set(FL.book.order)].filter((k) => {
     const t = FL.book.tlds[k];

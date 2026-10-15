@@ -1659,6 +1659,7 @@ function kernel_check(text: string): string | null {
 // -o <out>.bendtt: writes the elaboration of a book bend2 checked to
 // out; gives a line per def out of scope, with why
 export function safe_emit(book: Book, out: string): string[] {
+  B.book_many_refuse(book, "the proof kernel (BendTT)");
   const got = safe_book(book);
   fs.writeFileSync(out, got.text);
   return got.oos.map(([k, why]) => "- " + B.name_key(k) + ": " + why + "\n");
@@ -1667,6 +1668,7 @@ export function safe_emit(book: Book, out: string): string[] {
 // --verdict: null when every def of a book bend2 checked is in the
 // kernel's scope and the kernel checks them all, else why not
 export function safe_check(book: Book): string | null {
+  B.book_many_refuse(book, "the proof kernel (BendTT)");
   const got = safe_book(book);
   return got.oos.length === 0 ? kernel_check(got.text) : "BendTT: out of scope:\n"
     + got.oos.map(([k, why]) => "- " + B.name_key(k) + ": " + why).join("\n");

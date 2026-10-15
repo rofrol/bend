@@ -26,8 +26,8 @@
 //   | Qnt ::= "Quant"
 //   | Qua ::= "&0" | "&1" | "&2"
 //   | Min ::= Term "<&>" Term
-//   | All ::= "@" Bind "->" Term
-//   | Lam ::= Name "=>" Body
+//   | All ::= "@" Bind "->" Term | Term "*->" Term
+//   | Lam ::= Name "=>" Body | "*" Name "=>" Body
 //   | App ::= Term "(" [Term ","?] ")"
 //   | ADT ::= Name "<" [Term ","?] ">"
 //   | Ctr ::= Name "{" [Term ","?] "}"
@@ -230,6 +230,25 @@
 // erased columns skipped. trusted claims: subject reduction (for
 // by-value reduction), progress, weak normalization of closed live
 // terms, no closed live inhabitant of Empty.
+// a callable-many closure (this fork's experiment, never upstream): A *-> B
+// is an arrow whose value may be called many times; *x => f builds one.
+// it is Type like every arrow, never Data, so it is never copied, bound
+// +, or stored in Data. it keeps the wall two ways. its domain A is
+// closed first-order (term_first_order): no arrow, universe, type
+// variable or stuck family, judged on the closed normal form so no
+// substitution turns it into an arrow; such a closure is never handed a
+// function, so never itself. and a binder f : A *-> B is either only
+// called, any number of times (a use Call, which no call consumes), or
+// moved once; a call and a move never meet in sequence or across
+// branches (Clash), and a closure past the def's parameters that captures
+// f moves it. call plus move rebuilds omega with no self-application
+// through the domain (delta(Mk{f}) = f(u)(Mk{f})), so f called many
+// times behaves like a def that cannot reach the value holding it.
+// *x => f captures only Data, each capture charged once (certify-once:
+// each call copies the environment); a def, or one partially applied to
+// Data, fits A *-> B too. no other conversion: A *-> B and A -> B differ.
+// the kernel and the backends have no such closure yet, so --verdict and
+// every backend refuse a book that spells one (book_many_refuse).
 // an @unsafe def opts out of the wall: its self-calls skip descent, its
 // binder domains form + at any kind, and it calls an unfilled law or a
 // def below it, so the claims above do not cover a book that uses one.
@@ -272,7 +291,10 @@ export type Quant =
   | { $: "Many" };
 
 // Uses
-export type Uses = PMap<Quant>;
+// a binder's measured use: a Quant, Call (only ever the head of a call:
+// a callable-many binder) or Clash (called and also moved)
+export type Use  = Quant | { $: "Call" } | { $: "Clash" };
+export type Uses = PMap<Use>;
 
 // Term
 export type BodyOf<B> = B extends [infer T] ? T : B;
@@ -287,8 +309,8 @@ export type TermOf<B> = (
   | { $: "Qnt" }                                                                   // Quant
   | { $: "Qua"; q: Quant }                                                         // &1, &2
   | { $: "Min"; a: TermOf<B>; b: TermOf<B> }                                       // a <&> b
-  | { $: "All"; q: Quant; k: Name; i: number; A: TermOf<B>; B: BodyOf<B> }         // @x:A -> B
-  | { $: "Lam"; k: Name; i: number; f: BodyOf<B>; q?: Quant }                      // x => f
+  | { $: "All"; q: Quant; k: Name; i: number; A: TermOf<B>; B: BodyOf<B>; c?: Bool } // @x:A -> B, A *-> B (c)
+  | { $: "Lam"; k: Name; i: number; f: BodyOf<B>; q?: Quant; c?: Bool }            // x => f, *x => f (c)
   | { $: "App"; f: TermOf<B>; x: TermOf<B> }                                       // f(x)
   | { $: "ADT"; k: Name; x: TermOf<B>[]; r: Name[] }                               // A<x0,x1,...>
   | { $: "Ctr"; k: Name; x: TermOf<B>[] }                                          // A{x0,x1,...}
@@ -316,7 +338,7 @@ export type Ctrs = Array<Ctr>;
 export type ADT  = { $: "ADT"; n: number; g: number; T: HTerm; c: Ctrs; b?: Bool; };
 export type Def  = { $: "Def"; n: number; x: number; T: HTerm; v: HTerm | null; e?: LTerm; b?: Bool; u?: Bool; i?: string[]; m?: string; l?: Bool; };
 export type TLD  = ADT | Def;
-export type Book = { tlds: Record<Name, TLD>; ctrs: Record<Name, Ctr>; order: Name[]; hols: number; tmps: Record<Name, Map<string, Name>>; };
+export type Book = { tlds: Record<Name, TLD>; ctrs: Record<Name, Ctr>; order: Name[]; hols: number; tmps: Record<Name, Map<string, Name>>; many?: Span; };
 
 // Context
 export type Ann = { q: Quant; k: Name; T: HTerm };
@@ -392,12 +414,12 @@ export function Min<X>(a: TermOf<X>, b: TermOf<X>, s?: Span): TermOf<X> {
   return { $: "Min", a, b, s };
 }
 
-export function All<X>(q: Quant, k: Name, i: number, A: NoInfer<TermOf<[X]>>, B: X, s?: Span): TermOf<[X]> {
-  return { $: "All", q, k, i, A, B, s };
+export function All<X>(q: Quant, k: Name, i: number, A: NoInfer<TermOf<[X]>>, B: X, s?: Span, c?: Bool): TermOf<[X]> {
+  return c === true ? { $: "All", q, k, i, A, B, s, c } : { $: "All", q, k, i, A, B, s };
 }
 
-export function Lam<X>(k: Name, i: number, f: X, s?: Span, q?: Quant): TermOf<[X]> {
-  return { $: "Lam", k, i, f, s, q };
+export function Lam<X>(k: Name, i: number, f: X, s?: Span, q?: Quant, c?: Bool): TermOf<[X]> {
+  return c === true ? { $: "Lam", k, i, f, s, q, c } : { $: "Lam", k, i, f, s, q };
 }
 
 export function App<X>(f: TermOf<X>, x: TermOf<X>, s?: Span): TermOf<X> {
@@ -627,7 +649,45 @@ export function uses_nil(): Uses {
 }
 
 export function uses_add(a: Uses, b: Uses): Uses {
-  return pmap_union(a, b, quant_add);
+  return pmap_union(a, b, use_add);
+}
+
+// a call and a move never mix, in sequence (add) or across branches (join)
+export function use_add(a: Use, b: Use): Use {
+  if (a.$ === "None" || b.$ === "None") {
+    return a.$ === "None" ? b : a;
+  }
+  if (a.$ === "Call" && b.$ === "Call") {
+    return a;
+  }
+  if (a.$ === "Call" || b.$ === "Call" || a.$ === "Clash" || b.$ === "Clash") {
+    return { $: "Clash" };
+  }
+  return quant_add(a, b);
+}
+
+export function use_join(a: Use, b: Use): Use {
+  if (a.$ === "None" || b.$ === "None") {
+    return a.$ === "None" ? b : a;
+  }
+  if (a.$ === "Call" && b.$ === "Call") {
+    return a;
+  }
+  if (a.$ === "Call" || b.$ === "Call" || a.$ === "Clash" || b.$ === "Clash") {
+    return { $: "Clash" };
+  }
+  return quant_join(a, b);
+}
+
+// a closure that captures a called binder moves it into its environment
+export function uses_move(us: Uses): Uses {
+  if (us.$ === "Emp") {
+    return us;
+  }
+  const v = us.v?.$ === "Call" ? Lone() : us.v;
+  const l = uses_move(us.l);
+  const r = uses_move(us.r);
+  return v === us.v && l === us.l && r === us.r ? us : Bin(v, l, r);
 }
 
 // LHS
@@ -733,13 +793,13 @@ export function term_higher(tm: LTerm, env: Env = null): HTerm {
       const A = term_higher(b.A, env);
       return All(b.q, b.k, b.i, A, (x: HTerm) => {
         return term_higher(b.B, list_set(env, b.i, x));
-      }, b.s);
+      }, b.s, b.c);
     }
     case "Lam": {
       const b = tm;
       return Lam(b.k, b.i, (x: HTerm) => {
         return term_higher(b.f, list_set(env, b.i, x));
-      }, b.s, b.q);
+      }, b.s, b.q, b.c);
     }
     case "Typ": {
       return Typ(term_higher(tm.g, env), tm.s);
@@ -795,11 +855,11 @@ export function term_lower(term: HTerm, d: number = 0): LTerm {
     }
     case "All": {
       const x: HTerm = Var(tm.k, d);
-      return All(tm.q, tm.k, d, term_lower(tm.A, d), term_lower(tm.B(x), d + 1), tm.s);
+      return All(tm.q, tm.k, d, term_lower(tm.A, d), term_lower(tm.B(x), d + 1), tm.s, tm.c);
     }
     case "Lam": {
       const x: HTerm = Var(tm.k, d);
-      return Lam(tm.k, d, term_lower(tm.f(x), d + 1), tm.s, tm.q);
+      return Lam(tm.k, d, term_lower(tm.f(x), d + 1), tm.s, tm.q, tm.c);
     }
     case "App": {
       return App(term_lower(tm.f, d), term_lower(tm.x, d), tm.s);
@@ -1361,14 +1421,14 @@ export function term_show(term: LTerm, top: number = -1, bnd: Name[] = [], file?
         bnd.push(tm.k);
         const B = go(tm.B, 1);
         bnd.pop();
-        const s = "@" + quant_show(tm.q) + tm.k + ":" + A + " -> " + B;
+        const s = "@" + quant_show(tm.q) + tm.k + ":" + A + (tm.c === true ? " *-> " : " -> ") + B;
         return prc > 1 ? "(" + s + ")" : s;
       }
       case "Lam": {
         bnd.push(tm.k);
         const f = go(tm.f, -1);
         bnd.pop();
-        const s = quant_show(tm.q ?? Lone()) + tm.k + " => " + f;
+        const s = (tm.c === true ? "*" : "") + quant_show(tm.q ?? Lone()) + tm.k + " => " + f;
         return prc > 0 ? "(" + s + ")" : s;
       }
       case "App": {
@@ -1825,6 +1885,20 @@ export function parse_term_base(p: Parse, beg: number): LTerm {
       const xs = t.$ === "ADT" ? t.x : Array.from({ length: tld.n }, (): LTerm => Qua(Lone(), s));
       return ADT(k, xs.map((x, i) => i < tld.g ? Qua(Many(), s) : x), s);
     }
+    case "*": {
+      parse_bump(p);
+      parse_skip(p);
+      const kb = p.pos;
+      const k  = parse_name(p);
+      const s  = parse_span(p, kb);
+      parse_eat(p, "=>");
+      const n0 = p.stk.length;
+      const i  = parse_open(p, k);
+      const f  = parse_block(p);
+      parse_close(p, n0);
+      p.book.many ??= s;
+      return Lam(k, i, f, s, undefined, true);
+    }
     case "\\": {
       parse_bump(p);
       parse_eat(p, "{");
@@ -1976,6 +2050,7 @@ export function parse_term_base(p: Parse, beg: number): LTerm {
 const INFIX: Record<string, [number, Bool, Name]> = {
   "<-":  [-1, false, ""],
   "->":  [0,  true,  ""],
+  "*->": [0,  true,  ""],
   "&":   [1,  true,  "Pair"],
   "|":   [1,  true,  "Or"],
   "||":  [2,  false, "Bool.or"],
@@ -2107,8 +2182,11 @@ export function parse_term_ops(p: Parse, tm: LTerm, beg: number, lvl: number): L
       parse_take(p, ",");
       const d = parse_reso(p, out.k);
       out = ADT(d, parse_fill(p, d, [b, ...parse_term_args(p, ">")], s), s);
-    } else if (op === "->") {
-      out = All(Lone(), "_", parse_open(p, "_"), out, b, s);
+    } else if (op === "->" || op === "*->") {
+      out = All(Lone(), "_", parse_open(p, "_"), out, b, s, op === "*->");
+      if (op === "*->") {
+        p.book.many ??= s;
+      }
     } else if (op === "<&>") {
       out = Min(out, b, s);
     } else if (op === "<>") {
@@ -2909,7 +2987,7 @@ export function term_wnf(book: Book, term: HTerm): HTerm {
             switch (tm.$) {
               case "Ctr": tm = Ctr(tm.k, tm.x.map((x) => term_cell(x)), tm.s); break;
               case "ADT": tm = ADT(tm.k, tm.x.map((x) => term_cell(x)), tm.s, tm.r); break;
-              case "All": tm = All(tm.q, tm.k, tm.i, term_cell(tm.A), tm.B, tm.s); break;
+              case "All": tm = All(tm.q, tm.k, tm.i, term_cell(tm.A), tm.B, tm.s, tm.c); break;
               case "Mat": tm = Mat(tm.k, term_cell(tm.h), term_cell(tm.m), tm.s); break;
               case "Eql": tm = Eql(term_cell(tm.a), term_cell(tm.b), term_cell(tm.T), tm.s); break;
               case "Min": tm = Min(term_cell(tm.a), term_cell(tm.b), tm.s); break;
@@ -3012,12 +3090,12 @@ export function term_snf(book: Book, term: HTerm): HTerm {
     case "All": {
       return All(tm.q, tm.k, tm.i, term_snf(book, tm.A), (x: HTerm) => {
         return term_snf(book, tm.B(x));
-      }, tm.s);
+      }, tm.s, tm.c);
     }
     case "Lam": {
       return Lam(tm.k, tm.i, (x: HTerm) => {
         return term_snf(book, tm.f(x));
-      }, tm.s);
+      }, tm.s, undefined, tm.c);
     }
     case "App": {
       return App(tm.f.$ === "Ref" ? tm.f : term_snf(book, tm.f), term_snf(book, tm.x), tm.s);
@@ -3149,7 +3227,7 @@ function compare_go(mode: "EQ" | "LE", book: Book, lhs: HTerm, rhs: HTerm, dep: 
     }
     case "All": {
       const x: HTerm = Var(a.k, dep);
-      return b.$ === "All" && a.q.$ === b.q.$
+      return b.$ === "All" && a.q.$ === b.q.$ && (a.c === true) === (b.c === true)
           && compare_go(mode, book, b.A, a.A, dep)
           && compare_go(mode, book, a.B(x), b.B(x), dep + 1);
     }
@@ -3369,13 +3447,20 @@ export function term_infer(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ctx: Ctx,
     }
     // Γ ⊢ A : Kind(q)
     // Γ , x : qA ⊢ B(x) : Type
+    // where a callable-many arrow A *-> B has a closed first-order A
+    //       (term_first_order), and is Type like every arrow
     // ----------------------------------------------- infer-all
     // Γ ⊢ @q x:A -> B : Type
     case "All": {
       const B_ctx = ctx_bind(ctx, d, tm.q, tm.k, tm.A);
       const A_chk = term_check_kind(book, lhs, tm.A, tm.q, tm.k, ctx, d, tm.A.s ?? tm.s);
+      const bad   = tm.c === true ? term_first_order(book, tm.A, d) : null;
+      if (bad !== null) {
+        throw Err(book, ctx, "a closed first-order domain for *-> (a primitive, a handle, an Array or a datatype"
+          + " of those: no function, universe, type variable or stuck type family)", bad, tm.A.s ?? tm.s, lhs.def);
+      }
       const B_chk = term_check(book, lhs, tm.B(Var(tm.k, d)), None(), Typ(Qua(Lone()), tm.s), B_ctx, d+1);
-      return Infer(All(tm.q, tm.k, d, A_chk.tm, B_chk.tm, tm.s), Typ(Qua(Lone()), tm.s), uses_nil());
+      return Infer(All(tm.q, tm.k, d, A_chk.tm, B_chk.tm, tm.s, tm.c), Typ(Qua(Lone()), tm.s), uses_nil());
     }
     // Γ ⊢ f : @q x:A -> B ~ fu
     // Γ ⊢ a : A ~ au
@@ -3388,6 +3473,8 @@ export function term_infer(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ctx: Ctx,
     //       substituted lambda, a Sigma field type B(fst) say, makes one)
     //       a template head took a as a ~ argument (infer-ref, x of
     //       them): the application passes, its instance stands for both
+    //       a live variable f at a callable-many type A *-> B is not
+    //       consumed by the call: it measures Call, not a move
     // --------------------------------------------------------------- infer-app
     // Γ ⊢ f(a) : B(a) ~ fu + au
     case "App": {
@@ -3399,8 +3486,16 @@ export function term_infer(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ctx: Ctx,
       if (f_wnf.$ !== "All") {
         throw Err(book, ctx, "a function type", f_inf.ty, tm.s, lhs.def);
       }
+      let f_us = f_inf.us;
+      let head = tm.f;
+      while (head.$ === "Var" && head.i < 0 && head.v !== undefined) {
+        head = head.v;
+      }
+      if (f_wnf.c === true && qt.$ !== "None" && head.$ === "Var" && head.i >= 0) {
+        f_us = pmap_set(f_us, head.i, { $: "Call" });
+      }
       const x_chk = term_check(book, lhs, tm.x, quant_dem(f_wnf.q, qt), f_wnf.A, ctx, d);
-      return Infer(App(f_inf.tm, x_chk.tm, tm.s), f_wnf.B(tm.x), uses_add(f_inf.us, x_chk.us));
+      return Infer(App(f_inf.tm, x_chk.tm, tm.s), f_wnf.B(tm.x), uses_add(f_us, x_chk.us));
     }
     // book[k].T = @q1 p1:K1 -> .. -> Kind(G)
     // Γ ⊢ xi : Ki ~ ui
@@ -3462,10 +3557,135 @@ export function tele_check(book: Book, lhs: LHS, tel: HTerm, xs: HTerm[], qt: Qu
   return { xs: out, us, tel };
 }
 
+// term_first_order(T, d) is null when T, a type in a context of depth d,
+// is closed first-order (R2 of callable-many closures), else the part
+// that is not: after weak head normalization at every level, a datatype
+// whose arguments are closed (a type argument first-order, a family one
+// first-order at fresh variables) and whose live fields are first-order
+// with the earlier fields as fresh variables, recursively (a datatype
+// met again is assumed, coinductively); a base handle (a bodiless law of
+// Base whose type ends in a kind; a template's ~ constant is not one, as
+// its instance unfolds) on the same terms; an equation over a
+// first-order type between closed endpoints. any other type fails: an
+// arrow, a universe, Quant, a variable, a stuck family. a field variable
+// may stand in a value position only, so the judgment is stable under
+// substitution of the context; a datatype nesting past 256 levels fails.
+export function term_first_order(book: Book, T: HTerm, d: number): HTerm | null {
+  const TOP  = 1 << 20;
+  const seen = new Set<string>();
+  let fv = d;
+  function closed(x: HTerm): boolean {
+    let ok = true;
+    JSON.stringify(term_lower(x, TOP), (k, v) => {
+      if (k === "s") {
+        return undefined;
+      }
+      if (v !== null && typeof v === "object" && v.$ === "Var" && v.i >= 0 && v.i < d) {
+        ok = false;
+      }
+      return v;
+    });
+    return ok;
+  }
+  function key(t: HTerm): string {
+    return JSON.stringify(term_lower(t, TOP), (k, v) => {
+      if (k === "s") {
+        return undefined;
+      }
+      return v !== null && typeof v === "object" && v.$ === "Var" && v.i >= d && v.i < TOP ? "#" : v;
+    });
+  }
+  function args(tel: HTerm, xs: HTerm[], dep: number): HTerm | null {
+    for (const x of xs) {
+      const t_all = tele_open(book, tel);
+      if (t_all === null) {
+        return x;
+      }
+      let n = 0;
+      let dom = term_wnf(book, t_all.A);
+      while (dom.$ === "All") {
+        dom = term_wnf(book, dom.B(Var(dom.k, fv++)));
+        n += 1;
+      }
+      if (dom.$ === "Typ") {
+        let y = x;
+        for (let j = 0; j < n; j++) {
+          y = term_apply(y, Var("_", fv++));
+        }
+        if (go(y, dep) !== null) {
+          return x;
+        }
+      } else if (!closed(x)) {
+        return x;
+      }
+      tel = t_all.B(x);
+    }
+    return null;
+  }
+  function go(t: HTerm, dep: number): HTerm | null {
+    const w = term_wnf(book, t);
+    switch (w.$) {
+      case "ADT": {
+        const tld = book.tlds[w.k];
+        if (dep > 256 || tld === undefined || tld.$ !== "ADT") {
+          return w;
+        }
+        const k = key(w);
+        if (seen.has(k)) {
+          return null;
+        }
+        seen.add(k);
+        const bad = args(tld.T, w.x, dep + 1);
+        if (bad !== null) {
+          return bad;
+        }
+        for (const ctr of book_adt(book, w, ctx_nil()).c) {
+          let tel = tele_fill(book, ctr.T, w.x, ctx_nil());
+          for (let j = 0; j < ctr.n; j++) {
+            const t_all = tele_open(book, tel);
+            if (t_all === null) {
+              return w;
+            }
+            const bad = t_all.q.$ === "None" ? null : go(t_all.A, dep + 1);
+            if (bad !== null) {
+              return bad;
+            }
+            tel = t_all.B(Var(t_all.k, fv++));
+          }
+        }
+        return null;
+      }
+      case "Eql": {
+        const bad = go(w.T, dep + 1);
+        return bad !== null ? bad : !closed(w.a) ? w.a : !closed(w.b) ? w.b : null;
+      }
+      case "Ref":
+      case "App": {
+        const [h, xs] = term_unapply(w);
+        const tld = h.$ === "Ref" ? book.tlds[h.k] : undefined;
+        if (tld === undefined || tld.$ !== "Def" || tld.b !== true || tld.v !== null || tld.i || xs.length !== tld.n
+          || h.k.includes("~") || tele_unbind(book, tld.T).ret.$ !== "Typ") {
+          return w;
+        }
+        return args(tld.T, xs, dep + 1);
+      }
+      default: {
+        return w;
+      }
+    }
+  }
+  return go(T, 0);
+}
+
 // the type T of a binder q k fits Kind(q); a miss is reported at s, and
 // a + binder's miss says why it needs Data
 export function term_check_kind(book: Book, lhs: LHS, T: HTerm, q: Quant, k: Name, ctx: Ctx, d: number, s?: Span): Check {
   const kind = Typ<HBody>(Qua(lhs_kind(lhs, q)), s);
+  const t    = q.$ === "Many" ? term_wnf(book, T) : null;
+  if (t?.$ === "All" && t.c === true) {
+    throw Err(book, ctx, "a Data type for +" + k, T, s, lhs.def,
+      "Note: a callable-many closure is called many times, never copied: bind it without +.");
+  }
   try {
     return term_check(book, lhs, T, None(), kind, ctx, d);
   } catch (e) {
@@ -3477,6 +3697,15 @@ export function term_check_kind(book: Book, lhs: LHS, T: HTerm, q: Quant, k: Nam
 
 export function uses_close(book: Book, ctx: Ctx, us: Uses, i: U32, k: Name, q: Quant, s: Span | undefined, def?: Name): Uses {
   const u = pmap_get(us, i) ?? None();
+  if (u.$ === "Clash") {
+    throw Err(book, ctx, quant_show(q) + k, k + " (called and also moved: a *-> binder is either only called, or moved once)", s, def);
+  }
+  if (u.$ === "Call") {
+    if (q.$ === "None") {
+      throw Err(book, ctx, quant_show(q) + k, k + " (called)", s, def);
+    }
+    return pmap_set(us, i, None());
+  }
   if (quant_join(u, q).$ !== q.$) {
     let obs = quant_show(u) + k;
     if (u.$ === "Many") {
@@ -3500,12 +3729,20 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
     // where q' is q, or + at a + binder when q is 1 and A : Kind(+)
     //       u[x] <= q'
     //       lhs steps by x while a parameter remains
+    //       a lambda past the def's parameters is a closure: a called
+    //       binder it captures is moved into it (uses_move)
+    //       *x => f checks only at A *-> B, and x => f never does: its
+    //       captures are Data, each charged once (uses_capture)
     // ---------------------------------------------- check-lam
     // Γ ⊢ x => f : T ~ u - x
     case "Lam": {
       const t_wnf = term_wnf(book, ty);
       if (t_wnf.$ !== "All") {
         throw Err(book, ctx, ty, "non-inferrable term", tm.s, lhs.def);
+      }
+      if ((tm.c === true) !== (t_wnf.c === true)) {
+        throw Err(book, ctx, ty, tm.c === true ? "a callable-many lambda (*" + tm.k + " => ..)"
+          : "an affine lambda (" + tm.k + " => ..; a *-> type takes a *" + tm.k + " => lambda)", tm.s, lhs.def);
       }
       const x: HTerm = Var(tm.k, d);
       let f_lhs = lhs;
@@ -3519,7 +3756,9 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
       }
       const f_ctx = ctx_bind(ctx, d, q, tm.k, t_wnf.A);
       const f_chk = term_check(book, f_lhs, tm.f(x), qt, t_wnf.B(x), f_ctx, d+1);
-      return Check(Lam(tm.k, d, f_chk.tm, tm.s), ty, uses_close(book, ctx, f_chk.us, d, tm.k, q, tm.s, lhs.def));
+      const f_us  = uses_close(book, ctx, f_chk.us, d, tm.k, q, tm.s, lhs.def);
+      const us    = tm.c === true ? uses_capture(book, lhs, ctx, f_us, qt, d, tm.s) : lhs.n === 0 ? uses_move(f_us) : f_us;
+      return Check(Lam(tm.k, d, f_chk.tm, tm.s, undefined, tm.c), ty, us);
     }
     // Γ ⊢ vj : Aj ~ vuj  (each value in Γ: the binders are parallel)
     // Γ ⊢ Aj : Kind(qj)
@@ -3655,7 +3894,9 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
           const h_chk = term_check(book, h_lhs, tm.h, qt, term_check_mat_goal(tel, ctr.n, []), ctx, d);
           const m_gol = All(t_wnf.q, t_wnf.k, t_wnf.i, ADT(a_wnf.k, a_wnf.x, tm.s, a_wnf.r.concat([ctr.k])), t_wnf.B, tm.s);
           const m_chk = rem.length === 1 && tm.m.$ !== "Mat" ? Check(Efq(tm.s), m_gol, uses_nil()) : term_check(book, lhs, tm.m, qt, m_gol, ctx, d);
-          return Check(Mat(tm.k, h_chk.tm, m_chk.tm, tm.s), ty, pmap_union(h_chk.us, m_chk.us, quant_join));
+          const [hu, mu] = lhs.n === 0 ? [uses_move(h_chk.us), uses_move(m_chk.us)] : [h_chk.us, m_chk.us];
+          const us = pmap_union(hu, mu, use_join);
+          return Check(Mat(tm.k, h_chk.tm, m_chk.tm, tm.s), ty, t_wnf.c === true ? uses_capture(book, lhs, ctx, us, qt, d, tm.s) : us);
         }
       }
     }
@@ -3705,6 +3946,8 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
       return Check(Rwt(e_inf.tm, p_chk.tm, f_chk.tm, tm.s), ty, uses_add(e_inf.us, f_chk.us));
     }
     // Γ ⊢ x : A ~ u    A <= T
+    // where a def k, or k partially applied to Data arguments, also
+    //       fits A *-> B when its type fits A -> B (term_lift)
     // ---------------------- check-any
     // Γ ⊢ x : T ~ u
     default: {
@@ -3712,10 +3955,69 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
     }
   }
   const x_inf = term_infer(book, lhs, tm, qt, ctx, d);
-  if (term_compare("LE", book, x_inf.ty, ty, d)) {
+  if (term_compare("LE", book, x_inf.ty, ty, d) || term_lift(book, lhs, tm, x_inf.ty, ty, ctx, d)) {
     return x_inf;
   }
   throw Err(book, ctx, ty, x_inf.ty, tm.s, lhs.def);
+}
+
+// a top-level def captures nothing, and a partial application of one
+// captures its arguments: at a callable-many goal it fits when every
+// live argument's parameter is Data and its type, its next arrow read
+// as *->, fits the goal
+export function term_lift(book: Book, lhs: LHS, tm: HTerm, A: HTerm, ty: HTerm, ctx: Ctx, d: number): boolean {
+  const g = term_wnf(book, ty);
+  const a = term_wnf(book, A);
+  if (g.$ !== "All" || g.c !== true || a.$ !== "All" || a.c === true) {
+    return false;
+  }
+  const [h, xs] = term_unapply(term_strip(tm));
+  const tld = h.$ === "Ref" ? book.tlds[h.k] : undefined;
+  if (tld === undefined || tld.$ !== "Def" || tld.x > 0) {
+    return false;
+  }
+  let tel = tld.T;
+  for (const x of xs) {
+    const t_all = tele_open(book, tel);
+    if (t_all === null) {
+      return false;
+    }
+    if (t_all.q.$ !== "None") {
+      try {
+        term_check(book, lhs, t_all.A, None(), Typ(Qua(Many())), ctx, d);
+      } catch (e) {
+        if ((e as Err)?.$ !== "Err") {
+          throw e;
+        }
+        throw Err(book, ctx, "a Data argument (a partial application at *-> copies its arguments on each call)", t_all.A, x.s ?? tm.s, lhs.def);
+      }
+    }
+    tel = t_all.B(x);
+  }
+  return term_compare("LE", book, All(a.q, a.k, a.i, a.A, a.B, a.s, true), g, d);
+}
+
+// a callable-many closure captures only Data: each call copies its
+// environment, so each live capture is charged once, like an argument
+// to a + binder (certify-once), whatever its measure inside the body
+export function uses_capture(book: Book, lhs: LHS, ctx: Ctx, us: Uses, qt: Quant, d: number, s?: Span): Uses {
+  let out = us;
+  for (const [i, u] of pmap_to_array(us)) {
+    const ann = pmap_get(ctx, i);
+    if (u.$ === "None" || ann === null) {
+      continue;
+    }
+    try {
+      term_check(book, lhs, ann.T, None(), Typ(Qua(Many())), ctx, d);
+    } catch (e) {
+      if ((e as Err)?.$ !== "Err") {
+        throw e;
+      }
+      throw Err(book, ctx, "a Data capture (" + ann.k + ": a *x => closure copies what it captures on each call)", ann.T, s, lhs.def);
+    }
+    out = pmap_set(out, i, qt);
+  }
+  return out;
 }
 
 export function def_check(book: Book, k: Name, def: Def, z?: number): LTerm {
@@ -3800,6 +4102,14 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 // closed ~ arguments, is minted and checked by its first live call
 // (infer-ref) while the caller is declared; it stays outside the order
 // (a seeded book keeps it), so it is no claim.
+
+// a book that spells *-> or *x => (book.many) stops at a backend or a
+// kernel that has no callable-many closure yet, named by what
+export function book_many_refuse(book: Book, what: string): void {
+  if (book.many !== undefined) {
+    throw Err(book, ctx_nil(), "callable-many closures are not supported by " + what + " yet", undefined, book.many);
+  }
+}
 
 export function book_valid(book: Book, done: number = 0): void {
   const tlds = book.tlds;
