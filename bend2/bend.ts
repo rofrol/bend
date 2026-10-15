@@ -241,10 +241,16 @@
 // function, so never itself. and a binder f : A *-> B is either only
 // called, any number of times (a use Call, which no call consumes), or
 // moved once; a call and a move never meet in sequence or across
-// branches (Clash), and a closure past the def's parameters that captures
-// f moves it. call plus move rebuilds omega with no self-application
+// branches (Clash). call plus move rebuilds omega with no self-application
 // through the domain (delta(Mk{f}) = f(u)(Mk{f})), so f called many
-// times behaves like a def that cannot reach the value holding it.
+// times behaves like a def that cannot reach the value holding it. an
+// ordinary or match lambda that captures f measures what its body does
+// with f: only calls (or captures under this same rule, transitively)
+// make the capture a Call, so a do block calls f in many statements; a
+// move inside it is a move. such a lambda is a one-shot affine token for
+// calls of f: it is Type and affine, R6 never turns -> into *->, and R4
+// keeps f out of every *x => closure, so no binding holding f is ever
+// contracted and f never reaches a reusable value that f can receive.
 // *x => f captures only Data, each capture charged once (certify-once:
 // each call copies the environment); a def, or one partially applied to
 // Data, fits A *-> B too. no other conversion: A *-> B and A -> B differ.
@@ -691,17 +697,6 @@ export function use_join(a: Use, b: Use): Use {
     return { $: "Clash" };
   }
   return quant_join(a, b);
-}
-
-// a closure that captures a called binder moves it into its environment
-export function uses_move(us: Uses): Uses {
-  if (us.$ === "Emp") {
-    return us;
-  }
-  const v = us.v?.$ === "Call" ? Lone() : us.v;
-  const l = uses_move(us.l);
-  const r = uses_move(us.r);
-  return v === us.v && l === us.l && r === us.r ? us : Bin(v, l, r);
 }
 
 // LHS
@@ -3765,8 +3760,9 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
     // where q' is q, or + at a + binder when q is 1 and A : Kind(+)
     //       u[x] <= q'
     //       lhs steps by x while a parameter remains
-    //       a lambda past the def's parameters is a closure: a called
-    //       binder it captures is moved into it (uses_move)
+    //       a lambda past the def's parameters is a closure: a binder
+    //       it captures keeps the use its body measured (a capture of a
+    //       call-only f is a Call), but never a borrowed (&) one
     //       *x => f checks only at A *-> B, and x => f never does: its
     //       captures are Data, each charged once (uses_capture)
     // ---------------------------------------------- check-lam
@@ -3796,7 +3792,7 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
       if (tm.c === true || lhs.n === 0) {
         uses_unborrowed(book, ctx, f_us, tm.s, lhs.def);
       }
-      const us    = tm.c === true ? uses_capture(book, lhs, ctx, f_us, qt, d, tm.s) : lhs.n === 0 ? uses_move(f_us) : f_us;
+      const us    = tm.c === true ? uses_capture(book, lhs, ctx, f_us, qt, d, tm.s) : f_us;
       return Check(Lam(tm.k, d, f_chk.tm, tm.s, undefined, tm.c), ty, us);
     }
     // Γ ⊢ vj : Aj ~ vuj  (each value in Γ: the binders are parallel)
@@ -3877,7 +3873,8 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
     //       m is dead past D's last constructor k: a default there (a
     //       flattened fallback) is \{}, unvisited; a case still checks
     //       T is no A *-> B (a match lambda is affine, as x => f is);
-    //       past the def's parameters it is a closure: uses_move
+    //       past the def's parameters it is a closure, capturing as
+    //       check-lam's x => f does
     // -------------------------------------------------------------- check-mat
     // Γ ⊢ \ {k: h; m} : T ~ hu | mu
     //
@@ -3942,8 +3939,7 @@ export function term_check(book: Book, lhs: LHS, tm: HTerm, qt: Quant, ty: HTerm
             uses_unborrowed(book, ctx, h_chk.us, tm.s, lhs.def);
             uses_unborrowed(book, ctx, m_chk.us, tm.s, lhs.def);
           }
-          const [hu, mu] = lhs.n === 0 ? [uses_move(h_chk.us), uses_move(m_chk.us)] : [h_chk.us, m_chk.us];
-          const us = pmap_union(hu, mu, use_join);
+          const us = pmap_union(h_chk.us, m_chk.us, use_join);
           return Check(Mat(tm.k, h_chk.tm, m_chk.tm, tm.s), ty, us);
         }
       }

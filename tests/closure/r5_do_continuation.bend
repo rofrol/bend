@@ -1,7 +1,8 @@
-# R5 consequence: a do block that calls a callable-many closure in two
-# statements is rejected: the second call lives in the continuation
-# closure, which moves close, and the first call is a call (A3 sequences
-# the two calls through a parallel let instead)
+# N15: a do block that calls a callable-many closure in two statements.
+# History: rejected in version 1, since the second call lives in the
+# continuation closure and a capture counted as a move (A3 went through a
+# parallel let); accepted since C008 (Q-rule: the continuation only calls
+# close, so its capture is a Call). c8_do_close runs this form.
 import Base
 
 def close_two(close: File *-> IO(Unit), a: File, b: File) -> IO(Unit):
@@ -9,13 +10,5 @@ def close_two(close: File *-> IO(Unit), a: File, b: File) -> IO(Unit):
     close(a)
     close(b)
 
-#|SOME PROOFS FAIL
-#|Error:
-#|- expected : close
-#|- observed : close (called and also moved: a *-> binder is either only called, or moved once)
-#|Location: close_two
-#|6 |
-#|7>| def close_two(close: File *-> IO(Unit), a: File, b: File) -> IO(Unit):
-#|  |               ^^^^^
-#|8 |   do IO<Unit>:
-#|exit 1
+#|ALL PROOFS CHECK
+#|Use --verdict for mathematical validity.

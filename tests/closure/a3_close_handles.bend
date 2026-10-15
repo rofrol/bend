@@ -1,8 +1,7 @@
 # A3: close: File *-> IO(Unit) captures nothing and is called on two
 # handles. The two calls are a parallel let and the do block sequences
-# their actions: a do block that calls close in two statements is
-# rejected, since the second statement lives in the continuation
-# closure, which moves close (R5; see r5_do_continuation.bend).
+# their actions (version 1 rejected calling close in two do statements;
+# since C008 that form is accepted too: see c8_do_close.bend).
 import Base
 
 def close_two(close: File *-> IO(Unit), a: File, b: File) -> IO(Unit):
