@@ -26,6 +26,10 @@ type Rule = { at: RegExp; cap: number };
 
 const RULES: Rule[] = [];
 
+// The fork's base, where upstream is pinned (BOOTSTRAP.md, "Decisions"):
+// bend2/bend.ts must stay as it is there.
+const BASE = "234cb9b9";
+
 // Allow
 // =====
 
@@ -46,7 +50,9 @@ allow("LICENSE");
 allow("flake.nix");
 allow("bend2/base.bend");
 allow("bend2/bend.ts", 48000);
-allow("bend2/comp.ts", 64000);
+// The fork's cap: upstream's 64000 is already exceeded at the fork's base
+// (64092 with ttok 0.3); fork machinery goes into new files.
+allow("bend2/comp.ts", 66000);
 allow("bend2/main.ts", 16000);
 allow("bend2/safe.ts", 24000);
 allow("bend2/bendtt.lean", 64000);
@@ -88,6 +94,14 @@ allow(/^tools\/bend-lint\/(README\.md|package\.json|tsconfig\.json)$/);
 allow(/^tools\/bend-lint\/src\/(lint\.ts|seam\.ts|lint\.test\.ts)$/);
 allow(/^tools\/bend-lint\/src\/bend\/(lint\.bend|effects\.js|sample\.bend)$/);
 allow(/^tools\/bend-lint\/rules\/[a-z_]+(\.test)?\.(ts|bend)$/);
+// The fork's bootstrap branch.
+allow(".herdr/checks.toml");
+allow("AGENTS-bend.md");
+allow("BOOTSTRAP.md");
+allow("DECISIONS.md");
+allow("LAWS.bend");
+allow("PROOF.bend");
+allow("TODO.md");
 
 // Gate
 // ====
@@ -118,6 +132,11 @@ function gate(): string[] {
     if (n > rule.cap) {
       fails.push(file + ": " + String(n) + " > " + String(rule.cap) + " ttok");
     }
+  }
+  const diff = child.spawnSync("git", ["diff", "--quiet", BASE, "--",
+    "bend2/bend.ts"], { cwd: lib.ROOT });
+  if (diff.status !== 0) {
+    fails.push("bend2/bend.ts: differs from the fork's base " + BASE);
   }
   return fails;
 }
