@@ -1,5 +1,9 @@
 # AGENTS
 
+This `bootstrap` branch of the user's fork follows the agent policy in
+`AGENTS-bend.md` (with `LAWS.bend` and `PROOF.bend`); read it first.
+Its goal is in `BOOTSTRAP.md`.
+
 Bend is a dependently typed, affine language that checks in one linear
 bidirectional pass and runs massively parallel on CPU threads and GPUs.
 bend2/bend.ts is the language (parser, theory, checker) and is human-written:
