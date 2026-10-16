@@ -30,6 +30,11 @@ const RULES: Rule[] = [];
 // bend2/bend.ts must stay as it is there.
 const BASE = "234cb9b9";
 
+// The fork's budget of divergence from upstream in bend2/comp.ts, added plus
+// deleted lines against BASE; raised only from a measured patch, recorded in
+// TODO.md and DECISIONS.md.
+const COMP_CHURN = 200;
+
 // Allow
 // =====
 
@@ -137,6 +142,25 @@ function gate(): string[] {
     "bend2/bend.ts"], { cwd: lib.ROOT });
   if (diff.status !== 0) {
     fails.push("bend2/bend.ts: differs from the fork's base " + BASE);
+  }
+  const churn = child.spawnSync("git", ["diff", "--numstat", BASE, "--",
+    "bend2/comp.ts"], { cwd: lib.ROOT, encoding: "utf8" });
+  if (churn.status !== 0) {
+    fails.push("bend2/comp.ts: git diff --numstat " + BASE + " failed");
+  } else {
+    let add = 0;
+    let del = 0;
+    for (const line of churn.stdout.trim().split("\n")) {
+      if (line === "") continue;
+      const [a, d] = line.split("\t");
+      add += Number(a);
+      del += Number(d);
+    }
+    if (!(add + del <= COMP_CHURN)) {
+      fails.push("bend2/comp.ts: " + String(add + del) + " lines changed ("
+        + String(add) + " added, " + String(del) + " deleted) since the "
+        + "fork's base " + BASE + " > " + String(COMP_CHURN));
+    }
   }
   return fails;
 }
