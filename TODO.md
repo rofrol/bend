@@ -36,6 +36,15 @@ The plan and its reasons are in `BOOTSTRAP.md`.
     `ulimit -s 512`; a negative test shows each refused effect fails
     loudly; `bench/runtime/lexer` time with and without the macro is
     recorded here.
+  In flight 2026-10-17: run r-zslxn3ka (attempt 1) was stopped by the
+  coordinator when the user paused work in this space (token budget); the
+  worker had not committed; its uncommitted work (comp.ts +63/-8,
+  `bend2/boot/portable.c`, `boot/portable/` tests and `check.ts`) is
+  saved beside the coordinator's handoff note
+  (`~/.local/state/roagent/sessions/claude/d9f8bbc8-3bbd-424b-a4ea-11033ea346c6-wip-t-wxinrqzi.diff`
+  and `...-untracked.tgz`) and still sits in the worker folder; the run
+  waits on review event 194073 (approve | retry | abort). The task text:
+  the same file's sibling `...-task-t-wxinrqzi.md`.
 - [ ] Wasm seed of an existing program (stage 1, part b): build [t-qrmvyves]
   `demos/pure_hvm5_mini/main.bend` and `bench/runtime/lexer/main.bend`
   with the portable profile to wasm32-wasi, and rebuild them from the
