@@ -83,6 +83,10 @@ names and pushes the landed commit to origin
 A repository with remotes but no origin is refused; one with no remote
 targets its current branch and skips the push. Blocks every item in
 "Next, in order".
+Decided by the user 2026-10-16 (d-nqumjilh): herdr removes this
+limitation as the next item of its own TODO; this repository waits until
+it lands. Requested from herdr's coordinator (session herdr-8b, pane
+wR:p2TH) the same day.
 
 (The four plan questions were answered 2026-10-16 and are recorded in
 `BOOTSTRAP.md`, "Decisions".)
