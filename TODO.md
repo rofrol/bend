@@ -97,7 +97,8 @@ targets its current branch and skips the push. Blocks every item in
 Decided by the user 2026-10-16 (d-nqumjilh): herdr removes this
 limitation as the next item of its own TODO; this repository waits until
 it lands. Requested from herdr's coordinator (session herdr-8b, pane
-wR:p2TH) the same day.
+wR:p2TH) the same day; queued there as t-a5uup6g5 (its d-3y3fupx7), next
+after t-xhaho72w; herdr's coordinator reports when it lands.
 
 (The four plan questions were answered 2026-10-16 and are recorded in
 `BOOTSTRAP.md`, "Decisions".)
