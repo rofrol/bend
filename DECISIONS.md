@@ -19,3 +19,15 @@ add a churn budget on `comp.ts` against the pinned base, the measure of
 rebase surface and agent drift (follow-up in TODO.md). Not a concern:
 upstream's CI checkout is shallow, but its workflow gates pull requests
 into main with main's gate, and this branch is not proposed upstream.
+
+## The comp.ts churn budget (t-hssxbai2)
+
+Done 2026-10-16 (run r-2nyhdsyx): `gates/repo.ts` fails when
+`git diff --numstat 234cb9b9 -- bend2/comp.ts` shows more than
+`COMP_CHURN` = 200 added plus deleted lines, naming the counts; a git
+failure or an unreadable count fails too. The 66000 ttok cap stays as a
+backstop. Follow-up of t-6cxkinmv, after consult round
+`20261016-231623-0cf6` that the user asked for ("isn't 64000 small?"):
+all five models kept the cap as a tripwire and named divergence from the
+pinned base as the measure of rebase surface and agent drift; the budget
+is raised only from a measured patch, with its evidence here.

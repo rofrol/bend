@@ -4,18 +4,6 @@ The plan and its reasons are in `BOOTSTRAP.md`.
 
 ## Next, in order
 
-- [ ] A churn budget on `bend2/comp.ts` in the repository gate (follow-up of [t-hssxbai2]
-  t-6cxkinmv): the gate also fails when `git diff --numstat 234cb9b9 --
-  bend2/comp.ts` shows more than 200 added plus deleted lines, with a
-  message naming both numbers; the 66000 ttok cap stays as a backstop.
-  Decided by the coordinator after consult round `20261016-231623-0cf6`,
-  which the user asked for ("isn't 64000 small?"; all five: keep the cap
-  as a tripwire, do not raise it in advance; a budget of divergence from
-  the pinned base measures rebase surface and agent drift; sol 150-300,
-  wonder 200, deepseek 150, argon 290): the number is raised only from
-  a measured patch (the portable profile's), recorded here with the
-  evidence.
-
 - [ ] Portable runtime profile, verified natively (stage 1, part a): add [t-wxinrqzi]
   to `bend2/comp.ts` one C macro, `BEND_PORTABLE`, over four explicit
   policies, so Bend's emitted C can later build for wasm32-wasi with no
