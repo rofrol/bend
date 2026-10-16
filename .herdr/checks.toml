@@ -1,0 +1,12 @@
+# Checks `herdr todo run --check NAME...` may run to verify a worker's commit:
+# each name maps to a program and its arguments, run as they are in the
+# worker's folder (no shell, so nothing is expanded or split).
+# Written by the coordinator once to start the driver (the user, d-6g3b4c5w).
+
+[checks]
+# An explicit parent-to-head diff also checks merge commits, unlike git show.
+whitespace = ["git", "diff", "--check", "HEAD^", "HEAD"]
+# The agent policy's model (AGENTS-bend.md: run before committing governed work).
+proof = ["bend", "PROOF.bend"]
+# The allow list and the ttok caps (needs ttok 0.3 on PATH, as upstream CI pins).
+repo = ["bun", "gates/repo.ts", "--gate"]

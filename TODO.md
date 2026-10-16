@@ -7,7 +7,16 @@ The plan and its reasons are in `BOOTSTRAP.md`.
 - [ ] Allow this branch's own files in `gates/repo.ts` (`BOOTSTRAP.md`, [t-6cxkinmv]
   `TODO.md`, the policy files, `boot/`, `.herdr/`) so the repository gate
   passes here; a fork-only change. Approved by the user 2026-10-16
-  (d-c24j3whb).
+  (d-c24j3whb). Decided by the coordinator after consult round
+  `20261016-231106-aacd` (all five: fork code in new files, small hooks
+  in `comp.ts`): `comp.ts` is already 64092 ttok (ttok 0.3, upstream CI's
+  pin) against its 64000 cap at the branch base, and 64085 on upstream
+  main; the fork caps it at 66000 (sol, mimo); every new fork file is
+  allowed by its exact path, with a cap set at its landing to its
+  measured size plus 10% (wonder), no directory wildcards; the gate also
+  fails when `bend2/bend.ts` differs from the pinned base 234cb9b9
+  (all five). The repo check (`.herdr/checks.toml`) must pass on the
+  item's commit.
 
 - [ ] Portable runtime profile, verified natively (stage 1, part a): add [t-wxinrqzi]
   to `bend2/comp.ts` one C macro, `BEND_PORTABLE`, over four explicit
