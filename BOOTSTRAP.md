@@ -80,8 +80,8 @@ Emscripten, not WASI.
 ## Plan
 
 Decided by the agent after consult round `20261016-205348-e3c5` (sol,
-mimo, deepseek, argon, wonder, unanimous on the order), pending the user's
-answers in `TODO.md`, "Needs a decision":
+mimo, deepseek, argon, wonder, unanimous on the order), with the user's
+answers under "Decisions" below:
 
 1. **The seed machinery first, with an existing program (TODO item 1).**
    The one unknown that can sink the whole goal is whether Bend's emitted
@@ -103,8 +103,7 @@ answers in `TODO.md`, "Needs a decision":
    wasm; the TS front end still supplies the IR.
 5. **The front end in Bend.** Parser, sugars and the elaboration needed to
    produce the IR, for `base.bend` and the compiler's own source (hub
-   imports vendored); whether it also type-checks is the user's choice
-   (TODO, "Needs a decision"). When the compiler builds its own Bend
+   imports vendored); a checker in Bend comes last ("Decisions"). When the compiler builds its own Bend
    source without TypeScript, it is self-hosted, and the seed is the whole
    compiler's wasm.
 
@@ -113,7 +112,7 @@ Bend-in-Bend program with a Lean oracle, but not one line on the path from
 Bend source to C to a wasm seed; extending the kernel with natives and
 effects to make it an IR would drop the proofs that make it small and
 trusted. It fits stage 5, as the differential oracle for a checker written
-in Bend (all five models; the user's choice is in `TODO.md`).
+in Bend (all five models; the user agreed, "Decisions").
 
 Why not an untyped `bend0` subset compiler as the main path: its fixed
 point proves only that the seed rebuilds itself, and it becomes a second
@@ -133,3 +132,19 @@ Rules for every stage:
   in the repository.
 - Each stage's exit criterion is a command anyone can run, recorded in
   `TODO.md` with its result.
+
+## Decisions
+
+Decided by the user 2026-10-16, asked as options after consult round
+`20261016-205348-e3c5`:
+
+- The kernel: BendTT is ported to Bend later, as the oracle for the
+  checker written in Bend (stage 5), not first.
+- Trust: a rebuild from the seed does not type-check the compiler's own
+  source; the seed compiles source checked by upstream's `bend.ts`, and a
+  checker in Bend comes last.
+- C compiler: any C11 compiler must build the seed step (wasm2c's output
+  and the shim); the stages after it may require clang, as upstream does
+  (WONTFIX #773).
+- Upstream: this stays a fork; upstream is pinned at 234cb9b9 and moved
+  only at stage boundaries, regenerating the differential goldens.

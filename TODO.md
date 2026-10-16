@@ -35,27 +35,8 @@ The plan and its reasons are in `BOOTSTRAP.md`.
 
 ## Needs a decision
 
-- Start with a port of BendTT (the kernel) to Bend?
-  Options: Later, as the oracle for the checker in Bend (stage 5) | First, beside item 1, as a Bend-in-Bend benchmark | Not at all
-  Checked: the kernel checks an elaborated core and has no runtime
-  semantics for natives or effects (`bend2/safe.ts` header); consult round
-  `20261016-205348-e3c5`, all five models: off the path to a seed.
-- Must a rebuild from the seed type-check the compiler's own source?
-  Options: No, the seed compiles source checked upstream; a checker in Bend comes last | Yes, no seed counts until the checker is in Bend
-  Checked: compiling needs elaboration, not checking, once the IR carries
-  layouts (`BOOTSTRAP.md`, plan step 2); a Bend checker of `bend.ts`'s
-  depth is the months-scale part.
-- Which C compiler must the bootstrap accept after the wasm2c step?
-  Options: Any C11 compiler for the seed step, clang after it | Any C11 compiler at every step
-  Checked: wasm2c output is plain C; the compiler's own C output is
-  clang-only by upstream policy (WONTFIX #773, `musttail`, `#embed`), so
-  "any C compiler" at every step means a second, portable emitter profile
-  that the self-hosted compiler also emits.
-- How does this branch follow upstream?
-  Options: Fork only; pin and move at stage boundaries | Fork only; follow each upstream release | Aim to offer it upstream later
-  Checked: upstream releases nearly daily; its repository gate rejects
-  new files and its caps on `comp.ts` and `main.ts` are set by upstream's
-  owner only (`gates/repo.ts`).
+(none open; the four plan questions were answered 2026-10-16 and are
+recorded in `BOOTSTRAP.md`, "Decisions")
 
 ## Proposed
 
