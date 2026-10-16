@@ -73,8 +73,19 @@ The plan and its reasons are in `BOOTSTRAP.md`.
 
 ## Needs a decision
 
-(none open; the four plan questions were answered 2026-10-16 and are
-recorded in `BOOTSTRAP.md`, "Decisions")
+How should workers run this branch's items, given herdr's driver cannot target it?
+Options: A standalone clone without remotes, on `bootstrap`, where runs land | The coordinator does the items itself here ("rób TODO sam") | Wait for herdr to take a configurable target branch
+Checked: `herdr todo run` bases a worker on the branch origin's HEAD
+names and pushes the landed commit to origin
+(`~/personal_projects/herdr/src/workers/target_branch.rs:1-50`,
+`src/workers/runs/finish.rs:590-692`); here origin is upstream
+`bendlang/bend` (main), so a run would land on `main` and push upstream.
+A repository with remotes but no origin is refused; one with no remote
+targets its current branch and skips the push. Blocks every item in
+"Next, in order".
+
+(The four plan questions were answered 2026-10-16 and are recorded in
+`BOOTSTRAP.md`, "Decisions".)
 
 ## Proposed
 
