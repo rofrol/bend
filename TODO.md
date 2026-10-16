@@ -4,6 +4,11 @@ The plan and its reasons are in `BOOTSTRAP.md`.
 
 ## Next, in order
 
+- [ ] Allow this branch's own files in `gates/repo.ts` (`BOOTSTRAP.md`, [t-6cxkinmv]
+  `TODO.md`, the policy files, `boot/`, `.herdr/`) so the repository gate
+  passes here; a fork-only change. Approved by the user 2026-10-16
+  (d-c24j3whb).
+
 - [ ] Portable runtime profile, verified natively (stage 1, part a): add [t-wxinrqzi]
   to `bend2/comp.ts` one C macro, `BEND_PORTABLE`, over four explicit
   policies, so Bend's emitted C can later build for wasm32-wasi with no
@@ -64,6 +69,12 @@ The plan and its reasons are in `BOOTSTRAP.md`.
     wasm from the tree gives the committed bytes (SHA-256), on this host
     platform only (no cross-host claim). Record wasm sizes (raw, zstd),
     the import list, peak memory and run times here.
+
+- [ ] Smoke-test the seed step with TinyCC as a third C compiler (wonder, [t-lsdahjql]
+  sol: clang and gcc passing does not show plain C11); needs tcc
+  installed (the coordinator fetches it). Approved by the user 2026-10-16
+  (d-z47u4mqj).
+
 - [ ] A versioned IR boundary in `comp.ts`: `-o x.bir` (name to settle in [t-x7bgmmpg]
   the item) dumps the erased, layout-annotated IR of a book as text; the C
   emitter reads its input from that dump, so its C is unchanged on the
@@ -92,10 +103,3 @@ wR:p2TH) the same day.
 `BOOTSTRAP.md`, "Decisions".)
 
 ## Proposed
-
-- [ ] Allow this branch's own files in `gates/repo.ts` (`BOOTSTRAP.md`, [t-6cxkinmv]
-  `TODO.md`, the policy files, `boot/`, `.herdr/`) so the repository gate
-  passes here; a fork-only change.
-- [ ] Smoke-test the seed step with TinyCC as a third C compiler (wonder, [t-lsdahjql]
-  sol: clang and gcc passing does not show plain C11); needs tcc
-  installed.
