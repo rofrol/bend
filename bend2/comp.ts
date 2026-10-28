@@ -3692,6 +3692,15 @@ static void err_trap(int sig) {
   err_post(NULL, ERR_DEEP);
 }
 
+// size_fit passes a u64 length to a size_t parameter, failing where the
+// target's size_t is narrower (wasm32) instead of truncating the length.
+static size_t size_fit(u64 n) {
+  if ((size_t)n != n) {
+    err_fail("a size past the address space");
+  }
+  return (size_t)n;
+}
+
 #endif
 
 #define err_seen(H)    (DEVICE && a32_load(a32_at(H, H_ERROR_CODE)) != 0)
@@ -4656,7 +4665,7 @@ static u32 row_grow(Env e, DEV Term* stk, u32 base, u32 stride, u32 want) {
 // ====
 
 static void* pool_try(void* at, u64 bytes) {
-  return mmap(at, bytes, PROT_READ | PROT_WRITE,
+  return mmap(at, size_fit(bytes), PROT_READ | PROT_WRITE,
     MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
 }
 
@@ -4668,8 +4677,13 @@ static void* pool_mmap(u64 bytes) {
   return p;
 }
 
+// The machine stack of each thread; -D BEND_STACK_BYTES=... changes it.
+#ifndef BEND_STACK_BYTES
+#define BEND_STACK_BYTES (1ull << 31)
+#endif
+
 static Term* pool_stack(void) {
-  u64   len = 1ull << 31;
+  u64   len = BEND_STACK_BYTES;
   char* p   = pool_mmap(len + 16384 + SIGSTKSZ);
   if (mprotect(p + len, 16384, PROT_NONE) != 0) {
     err_fail("stack guard failed");
@@ -5172,15 +5186,30 @@ static void cube_run(u64* H, bool gpu) {
 
 static u64 corpus_size;
 
+// The CPU corpus's first size; -D BEND_CORPUS_BYTES=... changes it.
+#ifndef BEND_CORPUS_BYTES
+#define BEND_CORPUS_BYTES (1ull << 33)
+#endif
+
 static void* corpus_map(u64 size) {
   u64   hint = 1ull << 45;
-  void* p    = pool_try((void*)hint, size);
-  while (p != (void*)hint && hint > size) {
-    if (p != MAP_FAILED) {
-      munmap(p, size);
+  void* p    = MAP_FAILED;
+  // A hint past the pointer width would truncate (to NULL on 32-bit
+  // pointers, which mmap takes as no hint), so it is tried only if it fits.
+  if (hint <= UINTPTR_MAX) {
+    p = pool_try((void*)hint, size);
+    while (p != (void*)hint && hint > size) {
+      if (p != MAP_FAILED) {
+        munmap(p, size_fit(size));
+      }
+      hint /= 2;
+      p     = pool_try((void*)hint, size);
     }
-    hint /= 2;
-    p     = pool_try((void*)hint, size);
+  }
+  // Where no hint fits or is honoured (Emscripten's mmap refuses every one
+  // below 2^32), the corpus goes wherever the system puts it.
+  if (p == MAP_FAILED) {
+    p = pool_try(NULL, size);
   }
   if (p == MAP_FAILED) {
     err_fail("reservation failed");
@@ -5218,7 +5247,7 @@ static bool corpus_grow(u64* H, u64 need) {
     if (ok) {
       corpus_lay(H, more * 2);
     } else if (got != MAP_FAILED) {
-      munmap(got, more);
+      munmap(got, size_fit(more));
     }
   }
   UNLOCK(bank_lock);
@@ -5228,7 +5257,7 @@ static bool corpus_grow(u64* H, u64 need) {
 static u64* corpus_setup(bool gpu, long threads, u64 bytes) {
   io_gpu     = gpu;
   KEEP_WORDS = gpu ? CHUNK : CAP_WORDS;
-  u64 dflt   = gpu ? gpu_span() : 1ull << 33;
+  u64 dflt   = gpu ? gpu_span() : BEND_CORPUS_BYTES;
   u64 size   = (gpu && bytes != 0 ? bytes : dflt) & ~16383ull;
   CORPUS     = gpu ? gpu_map(size) : corpus_map(size);
   u64* H     = CORPUS;
@@ -5438,7 +5467,7 @@ static Term io_wait_on(IoWork* w, int fd, short evts, u64 time, IoPack more) {
 }
 
 OUTLINE void io_out(FILE* h, const char* data, u64 len) {
-  if (fwrite(data, 1, len, h) != len) {
+  if (fwrite(data, 1, size_fit(len), h) != len) {
     err_fail("a short write on a standard stream");
   }
 }
@@ -5465,13 +5494,13 @@ OUTLINE char* io_cbuf(Env e, Term s, u64* len, u64 cons) {
   u64   cap = 64;
   u64   n   = 0;
   u64   bad = 0;
-  char* buf = io_mem(malloc(cap));
+  char* buf = io_mem(malloc(size_fit(cap)));
   while (term_aux(s) == cons) {
     Term fb[2];
     spare_free(e, cls_fit(2), ctr_take(e, s, 2, fb));
     if (n + 5 > cap) {
       cap *= 2;
-      buf = io_mem(realloc(buf, cap));
+      buf = io_mem(realloc(buf, size_fit(cap)));
     }
     if (cons == CID(SCon)) {
       n += io_utf8(buf + n, fb[0]);
@@ -5663,7 +5692,7 @@ static void io_wait(Env e, bool block) {
     }
   }
   u64 len = (u64)top / 64 * 8 + 8;
-  u8* set[2] = { io_mem(calloc(2, len)), NULL };
+  u8* set[2] = { io_mem(calloc(2, size_fit(len))), NULL };
   set[1] = set[0] + len;
   io_bit(set[0], io_wake_fd[0], true);
   for (IoWork* a = io_park; a != NULL;
@@ -5681,7 +5710,7 @@ static void io_wait(Env e, bool block) {
     if (errno != EINTR) {
       err_fail("the poller failed");
     }
-    memset(set[0], 0, 2 * len);
+    memset(set[0], 0, size_fit(2 * len));
   }
   if (io_bit(set[0], io_wake_fd[0], false)) {
     io_take(e);
