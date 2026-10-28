@@ -174,7 +174,9 @@ static void process_call(IoWork* w) {
       }
     }
   }
-#ifndef __APPLE__
+// Emscripten's libc does not declare addclosefrom_np; wasm never gets
+// here, io_work refuses the effect first.
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
   if (p->code == 0) {
     p->code = posix_spawn_file_actions_addclosefrom_np(&actions, 3);
   }

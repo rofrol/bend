@@ -4,6 +4,11 @@
 #ifdef __linux__
 #include <sys/random.h>
 #endif
+#if defined(__EMSCRIPTEN__)
+// Declares getrandom for the call below, which wasm never reaches: the
+// effect runs on the helper pthread, and io_work refuses it first.
+#include <sys/random.h>
+#endif
 
 // One word from the host's entropy source: getrandom never returns short
 // for a request this small once the pool is ready.

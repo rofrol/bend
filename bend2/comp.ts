@@ -2851,8 +2851,8 @@ export function compile_book(book: Bend.Book): string {
     `(V)[${j}] = ${r};`).join(" ")}`, "",
   `#define WL_TAKE(V) ${rs.slice(0, resw).map((r, j) =>
     `${r} = (V)[${j}];`).join(" ")}`, "",
-  `#define WL_SIG Env e, DEV Term* sp, u32 seq, u32 rn, ${ws.map((w) =>
-    "Term " + w).join(", ")}`, "", `#define WL_ALL e, sp, seq, rn, ${ws
+  `#define WL_SIG WL_ENV_SIG, DEV Term* sp, u32 seq, u32 rn, ${ws.map((w) =>
+    "Term " + w).join(", ")}`, "", `#define WL_ALL WL_ENV_ALL, sp, seq, rn, ${ws
     .join(", ")}`, "",
   `#define WL_TABLE ${entries.map((s) => `WL_X(${s.fid})`).join(" ")
     } WL_X(FID_EXIT)`, `#define MAIN_FID ${seg_fid("main")}`,
@@ -3360,7 +3360,18 @@ using namespace metal;
 #define UNLOCK(l)  __atomic_store_n(&(l), 0, __ATOMIC_RELEASE)
 #define WL_FN      static PRESERVE(preserve_none) __attribute__((noinline)) Term
 #define WL_CASE(F) WL_FN WL_##F(WL_SIG)
+#if defined(__EMSCRIPTEN__)
+// Wasm passes a struct by a pointer to the caller's copy, which a musttail
+// call frees before the callee reads it: a segment takes Env's two words
+// and rebuilds e at WL_OPEN.
+#define WL_ENV_SIG DEV u64* wl_mem, DEV u64* wl_alc
+#define WL_ENV_ALL e.mem, e.alc
+#define WL_OPEN    { Env e = { wl_mem, wl_alc }; WL_BANK u32 rn;
+#else
+#define WL_ENV_SIG Env e
+#define WL_ENV_ALL e
 #define WL_OPEN    { WL_BANK u32 rn;
+#endif
 #define WL_JMP(F)  __attribute__((musttail)) return WL_##F(WL_ALL)
 #define WL_DYN(F)  __attribute__((musttail)) return wl_tab[F](WL_ALL)
 #endif
@@ -3388,11 +3399,20 @@ using namespace metal;
     STK(wi) = e.mem[A + wi]; \
   } \
   sp += (N - 1) * LANE_STEP;
+#if defined(__EMSCRIPTEN__)
+// Wasm has no guard page (pool_stack), so the host checks room too.
+#define WL_ROOM(N) \
+  if (sp + (N) >= stk_end) { \
+    err_post(e.mem, ERR_DEEP); \
+    return 0; \
+  }
+#else
 #define WL_ROOM(N) \
   if (DEVICE && sp + (N) * CUBE >= e.mem + STAT_OFF + CUBE) { \
     err_post(e.mem, ERR_DEEP); \
     return 0; \
   }
+#endif
 
 // Types
 // =====
@@ -3491,9 +3511,18 @@ typedef u32 __attribute__((may_alias)) u32a;
 
 #define PAGE_UP(n) (((n) + PAGE_LEN - 1) & ~(PAGE_LEN - 1))
 #define ALC_OFF  PAGE_UP(H_BANK + 3 * NCLS_ALL)
+#if defined(__EMSCRIPTEN__)
+// One worker on the host: the device's per-lane allocator rows and Term
+// stacks are not in the corpus (the host's are ALC[w] and pool_stack), and
+// the rings are there only when a ! fork can deal tasks (BANGS != 0).
+#define RING_OFF ALC_OFF
+#define STAK_OFF (RING_OFF + (BANGS ? CUBE * RING_WORDS : 0))
+#define STAT_OFF STAK_OFF
+#else
 #define RING_OFF (ALC_OFF + CUBE * 2 * NCLS_ALL)
 #define STAK_OFF (RING_OFF + CUBE * RING_WORDS)
 #define STAT_OFF (STAK_OFF + CUBE * STAK_LEN)
+#endif
 #define HEAP_OFF (STAT_OFF + PAGE_UP(STAT_LEN))
 
 // Globals
@@ -3537,6 +3566,9 @@ static CUfunction gpu_pso;
 #endif
 static bool io_gpu;
 static DEV Term*  io_stk;
+#if defined(__EMSCRIPTEN__)
+static Term*      stk_end;
+#endif
 
 static const char* CLI_HELP =
   "usage: %s [options] [arguments]\n"
@@ -3684,7 +3716,22 @@ static void err_fail(const char* msg) {
   _exit(1);
 }
 
+#if defined(__EMSCRIPTEN__)
+static u64 corpus_size;
+#endif
+
 static void err_post(u64* H, u32 code) {
+#if defined(__EMSCRIPTEN__)
+  // ERR_TEXT's advice names --gpu, which wasm lacks: its corpus is static
+  // storage sized when the module is built, and never grows.
+  if (code == ERR_HEAP) {
+    char msg[160];
+    snprintf(msg, sizeof msg, "out of memory: the corpus of %llu bytes is"
+      " full; build with a bigger -DBEND_CORPUS_BYTES=...",
+      (unsigned long long)corpus_size);
+    err_fail(msg);
+  }
+#endif
   err_fail(ERR_TEXT[code]);
 }
 
@@ -4678,10 +4725,30 @@ static void* pool_mmap(u64 bytes) {
 }
 
 // The machine stack of each thread; -D BEND_STACK_BYTES=... changes it.
+#if !defined(BEND_STACK_BYTES) && defined(__EMSCRIPTEN__)
+#define BEND_STACK_BYTES (1ull << 23)
+#endif
 #ifndef BEND_STACK_BYTES
 #define BEND_STACK_BYTES (1ull << 31)
 #endif
 
+#if defined(__EMSCRIPTEN__)
+// mprotect is a stub and wasm raises no SIGSEGV, so there is no guard page:
+// WL_ROOM stops a segment's frame at stk_end. A task's entry (FID_ENTER,
+// FID_EXIT's WL_FRAME and WL_ARGS) pushes unchecked, but from the stack's
+// base and at most 3 + 247 words (WIDE), so it fits the 16 KiB past
+// stk_end whatever BEND_STACK_BYTES is. One worker, so one stack, taken
+// once per instance (io_loop, or bend_init, which refuses a second call):
+// static storage, which needs no zeroing (unlike Emscripten's mmap, a
+// memalign and a memset) and stays out of resident memory until used.
+static char pool_stack_bss[BEND_STACK_BYTES + 16384]
+  __attribute__((aligned(16384)));
+
+static Term* pool_stack(void) {
+  stk_end = (Term*)(pool_stack_bss + BEND_STACK_BYTES);
+  return (Term*)pool_stack_bss;
+}
+#else
 static Term* pool_stack(void) {
   u64   len = BEND_STACK_BYTES;
   char* p   = pool_mmap(len + 16384 + SIGSTKSZ);
@@ -4695,6 +4762,7 @@ static Term* pool_stack(void) {
   sigaction(SIGBUS, &sa, NULL);
   return (Term*)p;
 }
+#endif
 
 // A wait yields a while before it sleeps, so a turn that ends (or follows)
 // within microseconds never pays a condvar wake.
@@ -5186,11 +5254,35 @@ static void cube_run(u64* H, bool gpu) {
 
 static u64 corpus_size;
 
-// The CPU corpus's first size; -D BEND_CORPUS_BYTES=... changes it.
+// The CPU corpus's first size; -D BEND_CORPUS_BYTES=... changes it. On
+// wasm it is the whole corpus (corpus_grow fails), sized from need: the
+// layout below HEAP_OFF (header, the rings of a program with ! forks, the
+// static image) plus 1,280 heap pages with their bank words (the patch
+// header says why 1,280), rounded up to the 16 KiB corpus_setup keeps.
+#if !defined(BEND_CORPUS_BYTES) && defined(__EMSCRIPTEN__)
+#define BEND_CORPUS_BYTES \
+  ((8 * (HEAP_OFF + 1280 * (PAGE_LEN + 10)) + 16383) & ~16383ull)
+#endif
 #ifndef BEND_CORPUS_BYTES
 #define BEND_CORPUS_BYTES (1ull << 33)
 #endif
 
+#if defined(__EMSCRIPTEN__)
+// The corpus is static storage, not mmap (memalign and a memset of the
+// whole corpus): wasm memory is zero at instantiation, wasm-ld writes no
+// data for .bss, and the runtime needs zeros only in the header [0,
+// ALC_OFF) and the rings' get/put words. It is used once per instance
+// (bend_init refuses a second call, corpus_grow fails), and the glue's
+// reset() makes a new instance, so it is never reused.
+static u64 corpus_bss[BEND_CORPUS_BYTES / 8] __attribute__((aligned(65536)));
+
+static void* corpus_map(u64 size) {
+  if (size > sizeof(corpus_bss)) {
+    err_fail("reservation failed");
+  }
+  return corpus_bss;
+}
+#else
 static void* corpus_map(u64 size) {
   u64   hint = 1ull << 45;
   void* p    = MAP_FAILED;
@@ -5216,13 +5308,23 @@ static void* corpus_map(u64 size) {
   }
   return p;
 }
+#endif
 
 static void corpus_lay(u64* H, u64 size) {
   u64 span = size / 8;
   u64 cap  = span > HEAP_OFF ? (span - HEAP_OFF) / (PAGE_LEN + 10) : 0;
+#if defined(__EMSCRIPTEN__)
+  // The host needs no page per device lane: page 0 is heap_alloc_miss's
+  // scratch page, and running out later is ERR_HEAP.
+  if (cap < 2) {
+    err_fail("the corpus (-DBEND_CORPUS_BYTES) is under its header, rings"
+      " and static image plus two heap pages");
+  }
+#else
   if (cap <= CUBE) {
     err_fail("the GPU span is under the rings, stacks and a page per lane");
   }
+#endif
   cap = cap < ~0u ? cap : ~0u - 1;
   u64 at = HEAP_OFF + (cap << PAGE_BITS);
   for (u32 c = 0; c < NCLS_ALL; c += 1) {
@@ -5236,6 +5338,11 @@ static void corpus_lay(u64* H, u64 size) {
 }
 
 static bool corpus_grow(u64* H, u64 need) {
+#if defined(__EMSCRIPTEN__)
+  // Linear memory does not grow (ALLOW_MEMORY_GROWTH=0) and the corpus is
+  // mapped once, so a full corpus is out of memory (ERR_HEAP).
+  return false;
+#endif
   bool ok = true;
   LOCK(bank_lock);
   while (ok && need > a32_load(a32_at(H, H_CAP))) {
@@ -5389,6 +5496,10 @@ OUTLINE void* io_mem(void* mem) {
 }
 
 static int io_sys_addr(const char* host, u32 port, struct sockaddr_in* at) {
+#if defined(__EMSCRIPTEN__)
+  // Every effect that opens or addresses a socket starts here.
+  err_fail("sockets are not supported on this target (wasm)");
+#endif
   memset(at, 0, sizeof(*at));
   at->sin_family = AF_INET;
   at->sin_port   = htons((uint16_t)port);
@@ -5458,6 +5569,12 @@ static void io_park_add(IoWork* w) {
 }
 
 static Term io_wait_on(IoWork* w, int fd, short evts, u64 time, IoPack more) {
+#if defined(__EMSCRIPTEN__)
+  // Only a parked request leads to io_wait's blocking select, which a wasm
+  // page cannot do; parking is refused instead.
+  err_fail("waiting on a timer or a stream is not supported on this target"
+    " (wasm)");
+#endif
   w->word = (u32)fd;
   w->pack = more;
   w->time = time;
@@ -5649,6 +5766,12 @@ static void* io_help(void* arg) {
 }
 
 static Term io_work(IoWork* w, IoCall call, IoPack pack) {
+#if defined(__EMSCRIPTEN__)
+  // A blocking call runs on a helper pthread, which wasm32 without
+  // -pthread does not have.
+  err_fail("blocking effects (files, processes, random numbers) are not"
+    " supported on this target (wasm)");
+#endif
   w->call  = call;
   w->pack  = pack;
   io_busy += 1;
@@ -6005,6 +6128,13 @@ int main(int argc, char** argv) {
       io_argv[io_argc++] = argv[i];
     }
   }
+#if defined(__EMSCRIPTEN__)
+  // One worker: wasm32 without -pthread starts no pool thread.
+  if (thr > 1) {
+    err_fail("more than one thread is not supported on this target (wasm)");
+  }
+  thr = 1;
+#endif
   bool dev = gpu != 0 && BANGS != 0 && gpu_probe();
   if (gpu == 1 && BANGS != 0 && !dev) {
     err_fail("--gpu on, but this binary found no usable GPU (a CUDA GPU needs"
