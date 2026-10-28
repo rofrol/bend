@@ -36,6 +36,7 @@ const VERSION = "2.0.35";
 const USAGE = [
   ["bend <file.bend> [args]", "check the file, then run main with args"],
   ["bend <file.bend> -o <out>", "build a binary, or C, JS, .mjs or BendTT by extension"],
+  ["bend <file.bend> -o <out.c> --lib <defs>", "build C with no main that exports the named defs"],
   ["bend <file.bend> --check-only", "check the file and its imports; run nothing"],
   ["bend <file.bend> --verdict", "check it, then recheck it with the proven kernel"],
   ["bend <file.bend> --publish [<name>@<version>]", "publish the file and its imports; a name needs login"],
@@ -235,6 +236,7 @@ async function cli_file(args: string[]): Promise<void> {
   let checkup = false;
   let publish = false;
   let named: string | undefined;
+  let lib: string[] | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
     if (a === "--help" || a === "-h") {
@@ -255,6 +257,10 @@ async function cli_file(args: string[]): Promise<void> {
     } else if (a === "-o") {
       i += 1;
       outs.push(args[i] ?? cli_fail("-o needs an output file"));
+    } else if (a === "--lib") {
+      i += 1;
+      lib = (args[i] ?? cli_fail("--lib needs a comma-separated list of defs"))
+        .split(",").filter((k) => k !== "");
     } else if (a === "--") {
       argv.push(...args.splice(i + 1));
     } else if (a.startsWith("-")) {
@@ -284,6 +290,9 @@ async function cli_file(args: string[]): Promise<void> {
   if (argv.length !== 0 && (outs.length !== 0 || only || checkup || publish)) {
     cli_fail("arguments go to a run: bend <file.bend> [args]");
   }
+  if (lib !== undefined && (outs.length !== 1 || !outs[0].endsWith(".c"))) {
+    cli_fail("--lib builds C: it takes exactly one -o <out>.c");
+  }
   if (checkup && outs.length !== 0) {
     cli_fail("--checkup takes no -o: a binary holds one main, so build each"
       + " import alone");
@@ -312,7 +321,7 @@ async function cli_file(args: string[]): Promise<void> {
       if (ins.has(at) || (fs.existsSync(at) && fs.statSync(at).isDirectory())) {
         cli_fail("-o " + out + " is a file the program reads, or a directory");
       }
-      cli_emit(book, out);
+      cli_emit(book, out, lib);
     }
   } catch (e) {
     cli_say(2, book_err(e) + "\n");
@@ -355,8 +364,10 @@ function path_real(p: string): string {
   return fs.existsSync(p) ? fs.realpathSync(p) : path.resolve(p);
 }
 
-function cli_emit(book: Bend.Book, out: string): void {
-  if (out.endsWith(".mjs")) {
+function cli_emit(book: Bend.Book, out: string, lib?: string[]): void {
+  if (lib !== undefined) {
+    fs.writeFileSync(out, Comp.compile_book(book, lib));
+  } else if (out.endsWith(".mjs")) {
     fs.writeFileSync(out, Comp.js_lib(book, true));
   } else if (/\.c?js$/.test(out)) {
     fs.writeFileSync(out, Comp.js_book(book));

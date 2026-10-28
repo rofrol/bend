@@ -2747,13 +2747,19 @@ function effect_srcs(fl: File, ext: string, miss: string): string[] {
 // In the generated C the word undefined is a leaked JS undefined; the effect
 // sources (reqs) are hand-written, and may say it.
 
-export function compile_book(book: Bend.Book): string {
+export function compile_book(book: Bend.Book, lib?: string[]): string {
+  // a library (--lib) roots its exported defs instead of main
+  const outs = lib === undefined ? null : lib_outs(book, lib);
   // a pure main's descriptor names constructors of the types it prints,
   // so their datatypes are roots too
-  const show = show_main(book);
+  const show = outs === null ? show_main(book) : null;
   const fams = (show ?? []).flatMap((c) =>
     typeof c === "string" ? [Bend.book_fam(book, c)] : []);
-  const fl = file_book(book, ["main", ...RUNTIME_ADTS, ...fams], false);
+  const fl = file_book(book, [...outs ?? ["main"], ...RUNTIME_ADTS, ...fams],
+    false);
+  // a host keeps a +parameter's value: its type takes shared values
+  outs?.forEach((k) => fun_of(fl, k).live.forEach(([q, , A]) =>
+    q.$ === "Many" && facts_hot(fl, A, true)));
   const facts = () => fl.own.size + fl.hot.size + fl.stat.size;
   let was: number;
   let reqs: string;
@@ -2780,6 +2786,10 @@ export function compile_book(book: Bend.Book): string {
       file_push(rl, `r0 = ${ctr_build(rl, k, qp)};`);
       file_push(rl, "WL_RETN(1);");
     }
+    // the host lends every argument, so an exported def borrows each one
+    // it does not own
+    outs?.forEach((k) => fun_of(fl, k).lays.forEach((_, i) =>
+      fl.lend.add(k + "~" + i)));
     graph_close(fl.lend, [...fl.lend].flatMap((l) => {
       const [a, r] = l.split("<");
       return r === undefined ? [] : [[r, a]];
@@ -2793,7 +2803,7 @@ export function compile_book(book: Bend.Book): string {
   const edges = [...fl.segs, ...fl.spins].flatMap((s) =>
     [...s.refs].map((r) => [s.fid, r]));
   const reach = (from: string[]) => graph_close(new Set(from), edges);
-  const live = reach([seg_fid("main")]);
+  const live = reach((outs ?? ["main"]).map(seg_fid));
   const wide = [...fl.bangs].some((k) =>
     fun_of(fl, k).live.some(([, , A]) => ty_clo(book, A)));
   const dev = reach([...[...fl.bangs].map(seg_fid), ...wide ? fl.clos : []]);
@@ -2874,7 +2884,374 @@ export function compile_book(book: Bend.Book): string {
     die("an unbound name in the emitted C");
   }
   return c_ids(fl, runtime_c([tabs, ...desc].join("\n\n"), spins, segs,
-    reqs));
+    reqs, outs === null ? null : lib_c(fl, outs)));
+}
+
+// Library
+// -------
+
+// A library (bend P.bend -o P.c --lib a,b) is the C of a program with no
+// main: bend_init() sets the runtime up as main does, and each named def
+// is a C function. A U32, an F32 and a Nat (up to 2^48-1) cross as C
+// scalars; any other value of a datatype crosses as an opaque handle, a
+// root-table slot and its generation in one u64, never a raw term. A
+// handle passed as a +parameter (a Data value the def may copy) is
+// borrowed: the host keeps it (term_keep, unless the emitter's lend
+// analysis, brw_of, found that the def only reads it) and it stays valid.
+// Any other handle argument is consumed, as Bend's affine use says: its
+// slot dies and its generation moves on, so a later use fails.
+// bend_dispose drops a handle's value.
+
+function lib_outs(book: Bend.Book, names: string[]): Name[] {
+  const ok = js_outs(book);
+  const outs = names.map((n) => ok.find((k) => Bend.name_key(k) === n)
+    ?? die("--lib: " + n + " is not a def a host can call (a def with a"
+      + " body, not foreign, IO or a template)"));
+  const cs = outs.map(lib_name);
+  if (new Set(cs).size !== cs.length) {
+    die("--lib: two defs share the C name of " + cs.find((c, i) =>
+      cs.indexOf(c) !== i));
+  }
+  return outs;
+}
+
+function lib_name(k: Name): string {
+  return "bend_def_" + Bend.name_key(k).replace(/\W/g, "_");
+}
+
+// lib_kind is how a value of type A crosses: a scalar's C type, "Array"
+// for an Array<F32> (the F32 region's contents, never a C value), or a
+// handle of a type id in tys (its key, layout and name).
+function lib_kind(fl: File, A: HTerm | null, lay: Lay, tys: string[][],
+  what: string): string | number {
+  const t = ty_adt(fl.book, A);
+  if (t !== null && WORDS[t.k] !== undefined) {
+    return t.k;
+  }
+  if (t?.k === "Array" && ty_adt(fl.book, t.x[0])?.k === "F32") {
+    return "Array";
+  }
+  if (t === null || ty_clo(fl.book, A)) {
+    die("--lib: " + what + " has a type a host cannot hold yet (only U32,"
+      + " F32, Nat, Array<F32>, closure-free datatypes and tuples of them"
+      + " cross)");
+  }
+  const key = [Bend.term_key(Bend.term_lower(t)), lay.ks.join(),
+    Bend.name_key(t.k)];
+  const at = tys.findIndex((x) => x[0] === key[0] && x[1] === key[1]);
+  return at >= 0 ? at : tys.push(key) - 1;
+}
+
+// lib_parts is what a result crosses as: a tuple (A & B, a Sigma) its
+// components in order, a nested one flattened (A & B & C), anything else
+// itself.
+function lib_parts(fl: File, A: HTerm | null): (HTerm | null)[] {
+  const t = ty_adt(fl.book, A);
+  if (t?.k !== "Sigma") {
+    return [A];
+  }
+  const tld = fl.book.tlds[t.k];
+  if (tld?.$ !== "ADT") {
+    return [A];
+  }
+  const [a, b] = ctr_doms(fl.book, tld.c[0], t.x);
+  return [a, ...lib_parts(fl, b)];
+}
+
+const LIB_C: Record<string, string> = { U32: "u32", F32: "float",
+  Nat: "u64" };
+
+const lib_ty = (c: string | number): string => typeof c === "number" ? "u64"
+  : c === "Array" ? "void" : LIB_C[c];
+
+function lib_c(fl: File, outs: Name[]): string {
+  const tys: string[][] = [];
+  const fns = outs.map((k) => {
+    const { n, live, lays, ret } = fun_of(fl, k);
+    const key = Bend.name_key(k);
+    const T = Bend.tele_fill(fl.book, fl.book.tlds[k].T, Array(n)
+      .fill(DUMMY), Bend.ctx_nil());
+    const brw = brw_of(fl, k);
+    const ins = live.map(([, x, A], i) => lib_kind(fl, A, lays[i], tys,
+      key + "'s parameter " + x));
+    // a result crosses as its parts, each with its own words of ret
+    const parts = lib_parts(fl, T);
+    const plays = parts.length === 1 ? [ret]
+      : parts.map((A) => lay_of(fl.book, A));
+    if (plays.flatMap((l) => l.ks).join() !== ret.ks.join()) {
+      die("--lib: " + key + "'s result is a tuple too wide to cross");
+    }
+    const outk = parts.map((A, p) => lib_kind(fl, A, plays[p], tys,
+      key + "'s result" + (parts.length > 1 ? " part " + p : "")));
+    if (ins.filter((c) => c === "Array").length > 1
+      || outk.filter((c) => c === "Array").length > 1) {
+      die("--lib: " + key + " passes more than one Array<F32> each way (the"
+        + " F32 region holds one)");
+    }
+    const ps = [...ins.flatMap((c, i) => c === "Array" ? []
+      : [`${lib_ty(c)} a${i}`]), ...outk.slice(1).flatMap((c, p) =>
+      c === "Array" ? [] : [`${lib_ty(c)}* r${p + 1}`])];
+    const at = lays.map((_, i) => lays.slice(0, i).flatMap((l) => l.ks)
+      .length);
+    const put = (i: number, w: string) => `  e.mem[nd + ${at[i]}] = ${w};`;
+    const keep = live.map(([q]) => q.$ === "Many");
+    const boxes = (i: number) => lays[i].ks.flatMap((k, j) =>
+      k === "box" ? [j] : []);
+    // consumed handles first, so a handle passed again fails
+    const order = [...ins.keys()].sort((i, j) => Number(keep[i])
+      - Number(keep[j]));
+    const after: string[] = [];
+    const body = order.flatMap((i) => {
+      const c = ins[i];
+      if (c === "F32") {
+        return [`  { u32 b; memcpy(&b, &a${i}, 4); e.mem[nd + ${at[i]}] = b; }`];
+      }
+      if (c === "Nat") {
+        return [`  if (a${i} > NAT_IMM) { lib_fail("${key}", "a Nat past the`
+          + ` largest immediate 2^48-1", a${i}); }`, put(i, `a${i}`)];
+      }
+      if (c === "U32") {
+        return [put(i, `a${i}`)];
+      }
+      if (c === "Array") {
+        // the def owns its Array parameters (brw_of): the block is its
+        return [put(i, "lib_arr_in(e)")];
+      }
+      const n = lays[i].ks.length;
+      const take = `  ${i === order.find((j) => typeof ins[j] === "number")
+        ? "LibSlot* " : ""}s = lib_take(a${i}, ${c}, "${key}");`;
+      const copy = `  memcpy(&e.mem[nd + ${at[i]}], s->w, ${n} * sizeof(u64));`;
+      if (keep[i]) {
+        return [take, ...brw[i] ? [] : boxes(i).map((j) =>
+          `  s->w[${j}] = term_keep(e, s->w[${j}], 1);`), copy];
+      }
+      if (brw[i] && boxes(i).length > 0) {
+        // the def only reads it: the consumed value is dropped after
+        after.push(...boxes(i).map((j) => `  term_drop(e, c${i}[${j}]);`));
+        return [take, `  u64 c${i}[${n}];`, `  memcpy(c${i}, s->w, ${n
+          } * sizeof(u64));`, copy, "  lib_kill(s);"];
+      }
+      return [take, copy, "  lib_kill(s);"];
+    });
+    const fid = seg_fid(k);
+    const offs = plays.map((_, p) => plays.slice(0, p).flatMap((l) => l.ks)
+      .length);
+    const got = outk.map((c, p) => {
+      const w = `e.mem[H_ROOT_WORD + ${offs[p]}]`;
+      return typeof c === "number" ? `lib_new(&${w}, ${c})`
+        : c === "Array" ? `lib_arr_out(e, ${w}, "${key}")`
+        : c === "F32" ? `lib_f32((u32)${w})` : c === "U32" ? `(u32)${w}` : w;
+    });
+    // the first part is the return value (none for an Array); the others
+    // are written before the drops of after
+    const ty = lib_ty(outk[0]);
+    const res = got[0];
+    after.unshift(...outk.flatMap((c, p) => p === 0 && c !== "Array" ? []
+      : [`  ${c === "Array" ? "" : "*r" + p + " = "}${got[p]};`]));
+    const say = (c: string | number, i: number | null) => typeof c
+      === "number" ? (i === null ? "a handle of " : keep[i] ? "borrows "
+        : "consumes ") + tys[c][2] : c === "Array" ? (i === null
+        ? "Array<F32> into the F32 region" : "Array<F32> from the F32 region")
+        : c;
+    return [`// ${key}: ${ins.map((c, i) => say(c, i)).join(", ")
+      || "no arguments"} -> ${outk.map((c, p) => (p > 0 && c !== "Array"
+      ? "*r" + p + " = " : "") + say(c, null)).join(" & ")}`,
+    `${ty} ${lib_name(k)}(${
+      ps.join(", ") || "void"}) {`,
+    "  Env e = lib_env();",
+    `  u64 nd = task_node(e, ${fid}, TERM_HOLE, 0, 0);`,
+    ...body,
+    `  corpus_eval(e.mem, term_tsk(${fid}, nd));`,
+    ...after.length === 0 ? [`  return ${res};`]
+      : ty === "void" ? after : [`  ${ty} r = ${res};`, ...after,
+        "  return r;"], "}"].join("\n");
+  });
+  const width = Math.max(1, ...tys.map(([, ks]) => ks.split(",").length));
+  return String.raw`// Library
+// =======
+
+// bend -o P.c --lib (compile_book): no main; the host calls bend_init()
+// once, then the exported defs below. A handle is a root-table slot (low
+// 32 bits) and its generation (high 32 bits); a slot holds its value's
+// words in the def's own layout, so the runtime's terms stay where the
+// corpus put them (the corpus is mapped once and never reset). Misuse
+// fails as the runtime does: a message and exit 1.
+
+#ifndef BEND_LIB_SLOTS
+#define BEND_LIB_SLOTS 4096
+#endif
+#define LIB_WORDS ${width}
+
+typedef struct {
+  u32 gen;
+  u32 type;
+  u32 live;
+  u64 w[LIB_WORDS];
+} LibSlot;
+
+static const char* LIB_TYPE_NAME[] = { ${tys.map(([, , k]) =>
+    JSON.stringify(k)).join(", ") || "0"} };
+static const char* LIB_TYPE_KS[] = { ${tys.map(([, ks]) =>
+    JSON.stringify(ks.split(",").map((k) => k[0]).join(""))).join(", ")
+    || "0"} };
+
+static LibSlot lib_slots[BEND_LIB_SLOTS];
+static u32     lib_free[BEND_LIB_SLOTS];
+static u32     lib_nfree;
+
+static void lib_fail(const char* fn, const char* what, u64 h) {
+  char msg[256];
+  snprintf(msg, sizeof msg, "%s: %s (handle 0x%llx)", fn, what,
+    (unsigned long long)h);
+  err_fail(msg);
+}
+
+static Env lib_env(void) {
+  if (CORPUS == NULL) {
+    err_fail("bend_init() was not called");
+  }
+  return (Env){ CORPUS, ALC[0] };
+}
+
+void bend_init(void) {
+  if (CORPUS != NULL) {
+    err_fail("bend_init() was called twice");
+  }
+  corpus_setup(false, 1, 0);
+  io_stk = pool_stack();
+  for (u32 i = 0; i < BEND_LIB_SLOTS; i += 1) {
+    lib_slots[i].gen = 1;
+    lib_free[i]      = BEND_LIB_SLOTS - 1 - i;
+  }
+  lib_nfree = BEND_LIB_SLOTS;
+}
+
+static LibSlot* lib_take(u64 h, u32 type, const char* fn) {
+  u32 i = (u32)h;
+  LibSlot* s = i < BEND_LIB_SLOTS ? &lib_slots[i] : NULL;
+  if (s == NULL || !s->live || s->gen != (u32)(h >> 32)) {
+    lib_fail(fn, "a handle that was consumed, disposed or never made", h);
+  }
+  if (type != ~0u && s->type != type) {
+    char what[160];
+    snprintf(what, sizeof what, "a handle of %s where %s goes",
+      LIB_TYPE_NAME[s->type], LIB_TYPE_NAME[type]);
+    lib_fail(fn, what, h);
+  }
+  return s;
+}
+
+static void lib_kill(LibSlot* s) {
+  s->live = 0;
+  s->gen += 1;
+  lib_free[lib_nfree++] = (u32)(s - lib_slots);
+}
+
+static u64 lib_new(u64* w, u32 type) {
+  if (lib_nfree == 0) {
+    err_fail("every handle slot is in use (BEND_LIB_SLOTS)");
+  }
+  LibSlot* s = &lib_slots[lib_free[--lib_nfree]];
+  s->live = 1;
+  s->type = type;
+  memcpy(s->w, w, strlen(LIB_TYPE_KS[type]) * sizeof(u64));
+  return ((u64)s->gen << 32) | (u64)(s - lib_slots);
+}
+
+static float lib_f32(u32 b) {
+  float f;
+  memcpy(&f, &b, 4);
+  return f;
+}
+
+// bend_dispose drops the value of a live handle.
+void bend_dispose(u64 h) {
+  Env e = lib_env();
+  LibSlot* s = lib_take(h, ~0u, "bend_dispose");
+  const char* ks = LIB_TYPE_KS[s->type];
+  for (u32 j = 0; ks[j] != 0; j += 1) {
+    if (ks[j] == 'b') {
+      term_drop(e, s->w[j]);
+    }
+  }
+  lib_kill(s);
+}
+
+// bend_heap_words is the heap's high-water mark in words: the pages the
+// allocator ever took from the corpus (freed words go back to its lists,
+// not to the corpus).
+u64 bend_heap_words(void) {
+  Env e = lib_env();
+  return (u64)a32_load(a32_at(e.mem, H_BUMP)) << PAGE_BITS;
+}
+
+// bend_handles is the number of live handles, a debug export.
+u32 bend_handles(void) {
+  return BEND_LIB_SLOTS - lib_nfree;
+}
+
+// The F32 region: an Array<F32> crosses as the BEND_LIB_F32 floats of
+// bend_f32() (a power of two; the length of every Array<F32> that
+// crosses), never as a handle or a C argument. A def that takes one reads
+// the region as its array: lib_arr_in copies the region into the block the
+// library holds (allocated on first use) and hands the block to the def,
+// which owns its Array parameters. A def that returns one writes it back:
+// lib_arr_out copies the block into the region and the library holds the
+// block until the next call takes it. So between calls the region is the
+// array and the host may read or write it in place; the library owns the
+// block, the host owns nothing to free.
+
+#ifndef BEND_LIB_F32
+#define BEND_LIB_F32 16384
+#endif
+#if BEND_LIB_F32 < 1 || (BEND_LIB_F32 & (BEND_LIB_F32 - 1)) != 0
+#error "BEND_LIB_F32 must be a power of two"
+#endif
+
+static float lib_region[BEND_LIB_F32];
+static Term  lib_arr;
+static bool  lib_held;
+
+// bend_f32 is the F32 region; bend_f32_len its length in floats.
+float* bend_f32(void) {
+  return lib_region;
+}
+
+u32 bend_f32_len(void) {
+  return BEND_LIB_F32;
+}
+
+static Term lib_arr_in(Env e) {
+  Term a = lib_arr;
+  if (lib_held && blk_shr(a)) {
+    term_drop(e, a);
+    lib_held = false;
+  }
+  if (!lib_held) {
+    Term z = 0;
+    a = blk_new(e, false, cls_fit(BEND_LIB_F32), 0, 1, &z);
+  }
+  lib_held = false;
+  memcpy(blk_ptr(e.mem, term_loc(a), 0), lib_region, sizeof lib_region);
+  return a;
+}
+
+static void lib_arr_out(Env e, Term a, const char* fn) {
+  if (term_tag(a) != TAG_BUF || blk_cls(a) != cls_fit(BEND_LIB_F32)) {
+    lib_fail(fn, "an Array<F32> result whose length is not BEND_LIB_F32",
+      a);
+  }
+  memcpy(lib_region, blk_ptr(e.mem, blk_loc(e.mem, a), 0),
+    sizeof lib_region);
+  if (lib_held) {
+    blk_free(e, lib_arr);
+  }
+  lib_arr  = a;
+  lib_held = true;
+}
+
+${fns.join("\n\n")}
+`;
 }
 
 // JS
@@ -3190,12 +3567,17 @@ function js_host(fl: File, k: Name): string {
 
 // A module (for the .bend loader and -o <out>.mjs) roots and exports each
 // def a host can call.
-export function js_lib(book: Bend.Book, mod = false): string {
-  const outs = !mod ? null : [...new Set(book.order)].filter((k) => {
+// js_outs is every def a host can call.
+function js_outs(book: Bend.Book): Name[] {
+  return [...new Set(book.order)].filter((k) => {
     const t = book.tlds[k];
     return done_live(t) && !def_foreign(t) && t.b !== true && t.x === 0
       && io_base(book, t.T) === null;
   });
+}
+
+export function js_lib(book: Bend.Book, mod = false): string {
+  const outs = !mod ? null : js_outs(book);
   const fl = file_book(book, outs ?? ["main"], true);
   for (const [k, def] of done_defs(fl, fun_runs)) {
     memo_gc();
@@ -3238,7 +3620,7 @@ function a32_ops(f: (k: string) => string): string {
 }
 
 const runtime_c = (tabs: string, spins: string, segs: string,
-  reqs: string): string => String.raw`
+  reqs: string, lib: string | null): string => String.raw`
 
 // Imports
 // =======
@@ -6030,7 +6412,22 @@ static void io_step(Env e, IoWork* a) {
   }
 }
 
-OUTLINE void io_loop(u64* H) {
+${lib === null ? RUN_LOOP : ""}
+// Requests
+// ========
+
+${reqs}
+
+// Main
+// ====
+
+${lib ?? RUN_MAIN}
+#endif
+`.slice(1);
+
+// io_loop and main, which a library (lib_c) replaces.
+
+const RUN_LOOP: string = String.raw`OUTLINE void io_loop(u64* H) {
   Env e = { H, ALC[0] };
   io_stk = pool_stack();
   signal(SIGPIPE, SIG_IGN);
@@ -6072,16 +6469,9 @@ OUTLINE void io_loop(u64* H) {
     io_step(e, io_pop(&io_runs));
   }
 }
+`;
 
-// Requests
-// ========
-
-${reqs}
-
-// Main
-// ====
-
-int main(int argc, char** argv) {
+const RUN_MAIN: string = String.raw`int main(int argc, char** argv) {
   long thr = 0;
   int  gpu = -1;
   u64  mem = 0;
@@ -6144,9 +6534,7 @@ int main(int argc, char** argv) {
   io_sync();
   return 0;
 }
-
-#endif
-`.slice(1);
+`;
 
 // RuntimeJs
 // =========
