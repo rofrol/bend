@@ -3020,8 +3020,8 @@ function c_header(segs: Seg[], clos: string[]): string {
   `#define WL_LAST(X) switch (war) { ${reg("case #: r# = (X); break;")} }`,
   `#define WL_SAVE(V) ${reg("(V)[#] = r#;", resw)}`,
   `#define WL_TAKE(V) ${reg("r# = (V)[#];", resw)}`,
-  `#define WL_SIG Env e, DEV Term* sp, u32 seq, u32 rn, Term ${ws.join(
-    ", Term ")}`, `#define WL_ALL e, sp, seq, rn, ${ws.join(", ")}`,
+  `#define WL_SIG u64* em, u64* ea, Term* sp, u32 seq, u32 rn, Term ${ws.join(
+    ", Term ")}`, `#define WL_ALL e.mem, e.alc, sp, seq, rn, ${ws.join(", ")}`,
   `#define WL_TABLE ${entries.map((s) => `WL_X(${s.fid})`).join(" ")
     } WL_X(FID_EXIT)`, `#define MAIN_FID ${seg_fid("main")}`,
   `#define BLK_SHR ${Number(fact("type", "Array"))}`);
@@ -3448,7 +3448,7 @@ using namespace metal;
 // across threadgroups; CUDA lanes hand off through a32 and FENCE. The
 // preserve_* attributes need clang 19+ and an optimized build. A segment is
 // a case of the device's switch, or a host preserve_none function entered
-// by musttail.
+// by musttail with Env's two words (wasm passes structs in the freed frame).
 
 #ifdef __METAL_VERSION__
 #if __METAL_VERSION__ >= 320
@@ -3512,7 +3512,7 @@ using namespace metal;
 #define UNLOCK(l)  __atomic_store_n(&(l), 0, __ATOMIC_RELEASE)
 #define WL_FN      FAR PRESERVE(preserve_none) Term
 #define WL_CASE(F) WL_FN WL_##F(WL_SIG) {
-#define WL_OPEN    { WL_BANK u32 rn;
+#define WL_OPEN    { Env e = { em, ea }; WL_BANK u32 rn;
 #define WL_JMP(F)  __attribute__((musttail)) return WL_##F(WL_ALL)
 #define WL_DYN(F)  __attribute__((musttail)) return wl_tab[F](WL_ALL)
 #endif
