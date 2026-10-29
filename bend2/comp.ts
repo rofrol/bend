@@ -4868,8 +4868,8 @@ static u32 row_grow(Env e, DEV Term* stk, u32 base, u32 stride, u32 want,
 // ====
 
 static void* pool_try(void* at, u64 bytes) {
-  return mmap(at, bytes, PROT_READ | PROT_WRITE,
-    MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+  return (size_t)bytes != bytes ? MAP_FAILED : mmap(at, bytes,
+    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
 }
 
 static void* pool_mmap(u64 bytes) {
